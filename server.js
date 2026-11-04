@@ -86,10 +86,16 @@ async function baseBatchDelete(tableId, recordIds) {
 }
 
 // ===== 数据转换工具 =====
-// 从飞书 link 字段提取 record_id 数组
+// 从飞书 link 字段提取 record_id 数组（兼容多种返回结构）
 function extractLinkIds(field) {
   if (!field || !Array.isArray(field)) return [];
-  return field.map(f => f.id || f.record_id);
+  const out = [];
+  field.forEach(f => {
+    if (typeof f === 'string') { out.push(f); return; }
+    if (f.record_ids && Array.isArray(f.record_ids)) out.push(...f.record_ids);
+    else if (f.id || f.record_id) out.push(f.id || f.record_id);
+  });
+  return out;
 }
 
 // 从飞书 select 字段提取值
@@ -501,12 +507,12 @@ app.post('/api/data/schedules/batch', authMiddleware, async (req, res) => {
       const fields = {};
       if (r.date) fields.date = toFeishuDate(r.date);
       if (r.personId && personIdToRecordId[r.personId]) {
-        fields.person = [{ id: personIdToRecordId[r.personId] }];
+        fields.person = [personIdToRecordId[r.personId]];
       }
       if (r.taskId && taskIdToRecordId[r.taskId]) {
-        fields.task = [{ id: taskIdToRecordId[r.taskId] }];
+        fields.task = [taskIdToRecordId[r.taskId]];
       }
-      if (r.role) fields.role = [r.role];
+      if (r.role) fields.role = r.role;
       fields.made = r.made || 0;
       fields.modified = r.modified || 0;
       fields.delivered = r.delivered || 0;
@@ -625,7 +631,7 @@ app.put('/api/data/asset-plan/:recordId', authMiddleware, async (req, res) => {
       const personsRaw = await baseGetAllRecords(personTable);
       const person = personsRaw.find(p => (p.fields.person_id || p.record_id) === fields.personId);
       if (person) {
-        feishuFields.person_id = [{ id: person.record_id }];
+        feishuFields.person_id = [person.record_id];
       }
     }
 
@@ -665,10 +671,10 @@ app.post('/api/data/asset-plan/batch', authMiddleware, async (req, res) => {
     const feishuRecords = records.map(r => {
       const fields = {};
       if (r.taskId && taskIdToRecordId[r.taskId]) {
-        fields.task = [{ id: taskIdToRecordId[r.taskId] }];
+        fields.task = [taskIdToRecordId[r.taskId]];
       }
       if (r.videoIndex !== undefined) fields.video_index = r.videoIndex;
-      if (r.assetType) fields.asset_type = [r.assetType];
+      if (r.assetType) fields.asset_type = r.assetType;
       if (r.planQty !== undefined) fields.plan_qty = r.planQty;
       if (r.planDate) fields.plan_date = toFeishuDate(r.planDate);
       fields.made = r.made || 0;
@@ -710,19 +716,19 @@ app.post('/api/data/tasks', authMiddleware, async (req, res) => {
     if (task.startDate) fields.start_date = toFeishuDate(task.startDate);
     if (task.deliveryDate) fields.delivery_date = toFeishuDate(task.deliveryDate);
     if (task.totalVideos !== undefined) fields.total_videos = task.totalVideos;
-    if (task.status) fields.status = [task.status];
+    if (task.status) fields.status = task.status;
     if (task.remark !== undefined) fields.remark = task.remark;
     fields.is_deleted = false;
 
     // 关联人员
     if (task.directorIds && Array.isArray(task.directorIds)) {
-      fields.director = task.directorIds.filter(id => personIdToRecordId[id]).map(id => ({ id: personIdToRecordId[id] }));
+      fields.director = task.directorIds.filter(id => personIdToRecordId[id]).map(id => personIdToRecordId[id]);
     }
     if (task.assetDesignerIds && Array.isArray(task.assetDesignerIds)) {
-      fields.asset_designer = task.assetDesignerIds.filter(id => personIdToRecordId[id]).map(id => ({ id: personIdToRecordId[id] }));
+      fields.asset_designer = task.assetDesignerIds.filter(id => personIdToRecordId[id]).map(id => personIdToRecordId[id]);
     }
     if (task.aiArtistIds && Array.isArray(task.aiArtistIds)) {
-      fields.ai_artist = task.aiArtistIds.filter(id => personIdToRecordId[id]).map(id => ({ id: personIdToRecordId[id] }));
+      fields.ai_artist = task.aiArtistIds.filter(id => personIdToRecordId[id]).map(id => personIdToRecordId[id]);
     }
 
     const resData = await axios.post(
@@ -762,18 +768,18 @@ app.put('/api/data/tasks/:recordId', authMiddleware, async (req, res) => {
     if (fields.startDate !== undefined) feishuFields.start_date = toFeishuDate(fields.startDate);
     if (fields.deliveryDate !== undefined) feishuFields.delivery_date = toFeishuDate(fields.deliveryDate);
     if (fields.totalVideos !== undefined) feishuFields.total_videos = fields.totalVideos;
-    if (fields.status !== undefined) feishuFields.status = [fields.status];
+    if (fields.status !== undefined) feishuFields.status = fields.status;
     if (fields.remark !== undefined) feishuFields.remark = fields.remark;
     if (fields.isDeleted !== undefined) feishuFields.is_deleted = fields.isDeleted;
 
     if (fields.directorIds) {
-      feishuFields.director = fields.directorIds.filter(id => personIdToRecordId[id]).map(id => ({ id: personIdToRecordId[id] }));
+      feishuFields.director = fields.directorIds.filter(id => personIdToRecordId[id]).map(id => personIdToRecordId[id]);
     }
     if (fields.assetDesignerIds) {
-      feishuFields.asset_designer = fields.assetDesignerIds.filter(id => personIdToRecordId[id]).map(id => ({ id: personIdToRecordId[id] }));
+      feishuFields.asset_designer = fields.assetDesignerIds.filter(id => personIdToRecordId[id]).map(id => personIdToRecordId[id]);
     }
     if (fields.aiArtistIds) {
-      feishuFields.ai_artist = fields.aiArtistIds.filter(id => personIdToRecordId[id]).map(id => ({ id: personIdToRecordId[id] }));
+      feishuFields.ai_artist = fields.aiArtistIds.filter(id => personIdToRecordId[id]).map(id => personIdToRecordId[id]);
     }
 
     const resData = await axios.put(
@@ -846,7 +852,7 @@ app.post('/api/data/ledger/sync', authMiddleware, async (req, res) => {
       .filter(i => i.itemName || i.videoType)
       .map(i => ({
         fields: {
-          task: [{ id: taskRec.record_id }],
+          task: [taskRec.record_id],
           item_name: i.videoType || i.itemName || '',
           unit_price: Number(i.unitPrice) || 0,
           quantity: Number(i.quantity) || 0,
@@ -893,8 +899,8 @@ app.post('/api/data/schedules/sync-plan', authMiddleware, async (req, res) => {
     const feishuRecords = records
       .map(r => {
         const fields = {
-          task: [{ id: taskRec.record_id }],
-          role: [r.role],
+          task: [taskRec.record_id],
+          role: r.role,
           planned: Number(r.planned) || 0,
           made: Number(r.made) || 0,
           modified: Number(r.modified) || 0,
@@ -903,7 +909,7 @@ app.post('/api/data/schedules/sync-plan', authMiddleware, async (req, res) => {
         };
         if (r.date) fields.date = toFeishuDate(r.date);
         if (r.personId && personIdToRecordId[r.personId]) {
-          fields.person = [{ id: personIdToRecordId[r.personId] }];
+          fields.person = [personIdToRecordId[r.personId]];
         }
         if (r.note) fields.note = r.note;
         return { fields };
@@ -945,9 +951,9 @@ app.post('/api/data/asset-plan/sync', authMiddleware, async (req, res) => {
 
     const feishuRecords = records.map(r => {
       const fields = {
-        task: [{ id: taskRec.record_id }],
+        task: [taskRec.record_id],
         video_index: Number(r.videoIndex) || 1,
-        asset_type: [r.assetType],
+        asset_type: r.assetType,
         plan_qty: Number(r.planQty) || 0,
         made: Number(r.made) || 0,
         modified: Number(r.modified) || 0,
@@ -957,7 +963,7 @@ app.post('/api/data/asset-plan/sync', authMiddleware, async (req, res) => {
       if (r.planDate) fields.plan_date = toFeishuDate(r.planDate);
       if (r.editDate) fields.edit_date = toFeishuDate(r.editDate);
       if (r.personId && personIdToRecordId[r.personId]) {
-        fields.person_id = [{ id: personIdToRecordId[r.personId] }];
+        fields.person_id = [personIdToRecordId[r.personId]];
       }
       return { fields };
     });
