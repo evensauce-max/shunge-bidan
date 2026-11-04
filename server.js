@@ -37,7 +37,17 @@ async function getTenantToken() {
 }
 
 // ===== 通用 Base 操作 =====
+// ===== 表数据短缓存（15 秒），写入时失效，避免每次保存都重拉整表做 ID 映射 =====
+const tableCache = {};
+const TABLE_CACHE_TTL = 15000;
+
+function invalidateTableCache(tableId) {
+  if (tableId) delete tableCache[tableId];
+}
+
 async function baseGetAllRecords(tableId) {
+  const cached = tableCache[tableId];
+  if (cached && Date.now() - cached.at < TABLE_CACHE_TTL) return cached.items;
   const token = await getTenantToken();
   let allItems = [];
   let pageToken = '';
@@ -49,6 +59,7 @@ async function baseGetAllRecords(tableId) {
     allItems = allItems.concat(res.data.data.items || []);
     pageToken = res.data.data.has_more ? res.data.data.page_token : '';
   } while (pageToken);
+  tableCache[tableId] = { at: Date.now(), items: allItems };
   return allItems;
 }
 
@@ -60,6 +71,7 @@ async function baseBatchCreate(tableId, records) {
     { headers: { Authorization: `Bearer ${token}` } }
   );
   if (res.data.code !== 0) throw new Error(res.data.msg);
+  invalidateTableCache(tableId);
   return res.data.data.records || [];
 }
 
@@ -71,6 +83,7 @@ async function baseBatchUpdate(tableId, records) {
     { headers: { Authorization: `Bearer ${token}` } }
   );
   if (res.data.code !== 0) throw new Error(res.data.msg);
+  invalidateTableCache(tableId);
   return res.data.data.records || [];
 }
 
@@ -82,6 +95,7 @@ async function baseBatchDelete(tableId, recordIds) {
     { headers: { Authorization: `Bearer ${token}` } }
   );
   if (res.data.code !== 0) throw new Error(res.data.msg);
+  invalidateTableCache(tableId);
   return true;
 }
 
@@ -278,6 +292,7 @@ app.put('/api/user/me', authMiddleware, async (req, res) => {
       { fields: { feishu_open_id: feishuOpenId } },
       { headers: { Authorization: `Bearer ${token}` } }
     );
+    invalidateTableCache(personTable);
 
     res.json({ success: true });
   } catch (err) {
@@ -427,6 +442,13 @@ app.get('/api/data/all', authMiddleware, async (req, res) => {
       task.assetPlan = assetPlanMap[task.id] || [];
     });
 
+    // 商单上的人员关联（record_id → 人员业务 ID），否则前端刷新后匹配不到人员
+    tasks.forEach(task => {
+      task.directorIds = (task.directorIds || []).map(id => personRecordIdToPersonId[id] || id);
+      task.assetDesignerIds = (task.assetDesignerIds || []).map(id => personRecordIdToPersonId[id] || id);
+      task.aiArtistIds = (task.aiArtistIds || []).map(id => personRecordIdToPersonId[id] || id);
+    });
+
     // 5. 排产记录表转换
     const schedules = schedulesRaw.map(item => {
       const f = item.fields;
@@ -573,6 +595,7 @@ app.put('/api/data/schedules/:recordId', authMiddleware, async (req, res) => {
     );
 
     if (resData.data.code !== 0) throw new Error(resData.data.msg);
+    invalidateTableCache(tableId);
     res.json({ record: resData.data.data.record });
   } catch (err) {
     console.error('更新排产错误:', err.message);
@@ -643,6 +666,7 @@ app.put('/api/data/asset-plan/:recordId', authMiddleware, async (req, res) => {
     );
 
     if (resData.data.code !== 0) throw new Error(resData.data.msg);
+    invalidateTableCache(tableId);
     res.json({ record: resData.data.data.record });
   } catch (err) {
     console.error('更新资产计划错误:', err.message);
@@ -738,6 +762,7 @@ app.post('/api/data/tasks', authMiddleware, async (req, res) => {
     );
 
     if (resData.data.code !== 0) throw new Error(resData.data.msg);
+    invalidateTableCache(tableId);
     res.json({ record: resData.data.data.record });
   } catch (err) {
     console.error('创建商单错误:', err.message);
@@ -789,6 +814,7 @@ app.put('/api/data/tasks/:recordId', authMiddleware, async (req, res) => {
     );
 
     if (resData.data.code !== 0) throw new Error(resData.data.msg);
+    invalidateTableCache(tableId);
     res.json({ record: resData.data.data.record });
   } catch (err) {
     console.error('更新商单错误:', err.message);
@@ -821,6 +847,7 @@ app.delete('/api/data/tasks/:recordId', authMiddleware, async (req, res) => {
       `${FEISHU_BASE}/bitable/v1/apps/${BASE_APP_TOKEN}/tables/${taskTable}/records/${recordId}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
+    invalidateTableCache(taskTable);
     res.json({ success: true });
   } catch (err) {
     console.error('删除商单错误:', err.message);
@@ -1008,6 +1035,7 @@ app.post('/api/data/persons', authMiddleware, async (req, res) => {
     );
 
     if (resData.data.code !== 0) throw new Error(resData.data.msg);
+    invalidateTableCache(tableId);
     res.json({ record: resData.data.data.record });
   } catch (err) {
     console.error('创建人员错误:', err.message);
@@ -1049,6 +1077,7 @@ app.put('/api/data/persons/:recordId', authMiddleware, async (req, res) => {
     );
 
     if (resData.data.code !== 0) throw new Error(resData.data.msg);
+    invalidateTableCache(tableId);
     res.json({ record: resData.data.data.record });
   } catch (err) {
     console.error('更新人员错误:', err.message);

@@ -11438,7 +11438,10 @@ function renderOrgTeam() {
           });
           const d = await r.json();
           if (!r.ok) throw new Error(d.error || '启用失败');
-          await loadFeishuData();
+          // 本地就地更新，避免整表重拉
+          target.isActive = true;
+          DATA.inactivePersons = DATA.inactivePersons.filter(x => x.id !== target.id);
+          if (!DATA.persons.find(x => x.id === target.id)) DATA.persons.push(target);
           renderOrg();
           renderDemand();
           renderPlan();
@@ -11951,7 +11954,25 @@ function openPersonEdit(personId) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || '保存失败');
 
-      await loadFeishuData();
+      // 本地就地更新，避免整表重拉（保存后等待数秒的根因）
+      person.name = name;
+      person.roles = roles;
+      person.employmentType = empType;
+      if (empType === 'formal') {
+        person.salary = payload.salary;
+        person.socialInsurance = payload.socialInsurance;
+        person.housingFund = payload.housingFund;
+      } else {
+        person.dailySalary = payload.dailySalary;
+        person.socialInsurance = 0;
+        person.housingFund = 0;
+      }
+      person.isActive = payload.isActive;
+      if (!payload.isActive) {
+        DATA.persons = DATA.persons.filter(x => x.id !== person.id);
+        if (!DATA.inactivePersons.find(x => x.id === person.id)) DATA.inactivePersons.push(person);
+      }
+
       close();
       renderOrg();
       renderDemand();
