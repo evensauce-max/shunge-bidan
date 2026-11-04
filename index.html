@@ -5664,7 +5664,7 @@
           <div class="user-role" id="userRole">资产设计师</div>
         </div>
       </div>
-      <div style="padding:0 12px 12px">
+      <div style="padding:0 12px 12px" id="demoRoleSwitch">
         <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:6px">演示身份切换</div>
         <div style="display:flex;flex-wrap:wrap;gap:4px">
           <button class="role-switch-btn" data-role="admin">管理员</button>
@@ -11225,8 +11225,43 @@ function renderOrgTeam() {
   // 导入飞书按钮
   const importBtn = document.getElementById('importFeishuBtn');
   if (importBtn) {
-    importBtn.onclick = () => {
-      showToast(`${icon('import', 16)} 飞书组织导入功能需对接飞书 API，当前为演示模式`);
+    importBtn.onclick = async () => {
+      if (!isAdmin) { showToast('只有管理员可以导入飞书组织'); return; }
+      const original = importBtn.innerHTML;
+      importBtn.disabled = true;
+      try {
+        importBtn.innerHTML = '正在读取飞书通讯录...';
+        const r = await fetch('/api/org/feishu-users');
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || '拉取飞书通讯录失败');
+        const users = d.users || [];
+        if (!users.length) { showToast('飞书通讯录中没有成员'); return; }
+
+        importBtn.innerHTML = '正在导入...';
+        const ir = await fetch('/api/org/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ users }),
+        });
+        const result = await ir.json();
+        if (!ir.ok) throw new Error(result.error || '导入失败');
+
+        await loadFeishuData();
+        renderPersons();
+        renderCurrent();
+        if (typeof renderOrgTeam === 'function') renderOrgTeam();
+
+        if (result.created > 0) {
+          showToast(`已导入 ${result.created} 名成员，跳过 ${result.skipped} 名（已存在）`);
+        } else {
+          showToast(`没有新成员，${result.skipped} 名成员已在系统中`);
+        }
+      } catch (err) {
+        showToast(err.message || '导入失败');
+      } finally {
+        importBtn.disabled = false;
+        importBtn.innerHTML = original;
+      }
     };
   }
 }
@@ -12010,6 +12045,10 @@ function setupCurrentUser(user) {
   };
   isAdmin = isAdminUser;
   viewPersonId = isAdminUser ? null : personId;
+
+  // 已通过飞书身份登录，隐藏演示身份切换
+  const demoSwitch = document.getElementById('demoRoleSwitch');
+  if (demoSwitch) demoSwitch.style.display = 'none';
 }
 
 // 把飞书 openId 写回人员表（匹配成功后自动绑定）

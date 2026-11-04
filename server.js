@@ -800,6 +800,112 @@ app.post('/api/data/persons', authMiddleware, async (req, res) => {
   }
 });
 
+// ===== 飞书组织：拉取通讯录成员 =====
+async function fetchFeishuOrgUsers() {
+  const token = await getTenantToken();
+  const users = [];
+  let pageToken = '';
+  do {
+    let url = 'https://open.feishu.cn/open-apis/contact/v3/users?page_size=100&department_id=0&user_id_type=open_id';
+    if (pageToken) url += `&page_token=${encodeURIComponent(pageToken)}`;
+    const r = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (r.data.code !== 0) {
+      const e = new Error(r.data.msg || '拉取通讯录失败');
+      e.feishuCode = r.data.code;
+      throw e;
+    }
+    (r.data.data.items || []).forEach(u => {
+      users.push({
+        openId: u.open_id,
+        name: u.name || '',
+        email: u.email || '',
+        avatar: (u.avatar && (u.avatar.avatar_72 || u.avatar.avatar_240)) || '',
+        jobTitle: u.job_title || '',
+      });
+    });
+    pageToken = r.data.data.has_more ? (r.data.data.page_token || '') : '';
+  } while (pageToken);
+  return users;
+}
+
+app.get('/api/org/feishu-users', authMiddleware, async (req, res) => {
+  try {
+    const users = await fetchFeishuOrgUsers();
+    res.json({ users });
+  } catch (err) {
+    const hint = err.feishuCode === 40004
+      ? '应用没有通讯录权限范围：请在开发者后台 → 权限管理 → 通讯录权限范围设为「全部成员」，然后发布版本'
+      : err.message;
+    console.error('拉取飞书通讯录失败:', err.message);
+    res.status(400).json({ error: hint, code: err.feishuCode || null });
+  }
+});
+
+// ===== 飞书组织：批量导入为系统成员 =====
+app.post('/api/org/import', authMiddleware, async (req, res) => {
+  const { users } = req.body;
+  if (!Array.isArray(users) || !users.length) {
+    return res.status(400).json({ error: '缺少 users' });
+  }
+  try {
+    const tableId = process.env.FEISHU_TABLE_PERSONS;
+    const existing = await baseGetAllRecords(tableId);
+
+    const normName = v => (v == null ? '' : String(v).trim());
+    const existingNames = new Set(existing.map(r => normName(r.fields.name)));
+    const existingOpenIds = new Set(
+      existing.map(r => normName(r.fields.feishu_open_id)).filter(Boolean)
+    );
+
+    // 计算下一个 person_id 序号
+    let maxNum = 0;
+    existing.forEach(r => {
+      const m = /^p(\d+)$/.exec(normName(r.fields.person_id));
+      if (m) maxNum = Math.max(maxNum, parseInt(m[1], 10));
+    });
+
+    const toCreate = [];
+    users.forEach(u => {
+      const name = normName(u.name);
+      if (!name) return;
+      if (existingNames.has(name)) return;
+      if (u.openId && existingOpenIds.has(u.openId)) return;
+      maxNum += 1;
+      toCreate.push({
+        fields: {
+          person_id: `p${maxNum}`,
+          name,
+          roles: [],
+          employment_type: ['正式员工'],
+          salary: 0,
+          daily_salary: 0,
+          social_insurance: 0,
+          housing_fund: 0,
+          energy: 1,
+          avatar: u.avatar || '',
+          feishu_open_id: u.openId || '',
+          monthly_data: '{}',
+          is_active: true,
+        },
+      });
+    });
+
+    if (!toCreate.length) {
+      return res.json({ created: 0, skipped: users.length, persons: [] });
+    }
+
+    const created = await baseBatchCreate(tableId, toCreate);
+    res.json({
+      created: created.length,
+      skipped: users.length - toCreate.length,
+      persons: created.map(r => ({ recordId: r.record_id, ...r.fields })),
+    });
+  } catch (err) {
+    console.error('导入飞书成员失败:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ===== 健康检查 =====
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
