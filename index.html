@@ -6780,8 +6780,9 @@ async function loadFeishuData() {
     if (!data.persons || !data.tasks) return false;
 
     // 1. 人员适配
-    DATA.persons = data.persons.map(p => ({
+    const mappedPersons = data.persons.map(p => ({
       id: p.id,
+      recordId: p.recordId,
       name: p.name,
       roles: p.roles || [],
       employmentType: EMPLOY_MAP[p.employmentType] || p.employmentType || 'formal',
@@ -6794,7 +6795,9 @@ async function loadFeishuData() {
       avatar: p.avatar || '',
       feishuOpenId: p.feishuOpenId || '',
       isActive: p.isActive !== false,
-    })).filter(p => p.isActive);
+    }));
+    DATA.inactivePersons = mappedPersons.filter(p => !p.isActive);
+    DATA.persons = mappedPersons.filter(p => p.isActive);
 
     // 2. 商单适配
     DATA.tasks = data.tasks.map(t => {
@@ -11222,6 +11225,58 @@ function renderOrgTeam() {
     btn.addEventListener('click', () => openPersonEdit(btn.dataset.id));
   });
 
+  // 已停用成员（仅在「全部」且无搜索时显示）
+  const inactiveList = DATA.inactivePersons || [];
+  if (inactiveList.length && orgTeamRoleFilter === 'all' && !orgTeamSearchText) {
+    const section = document.createElement('div');
+    section.innerHTML =
+      `<div style="margin:18px 0 8px;font-size:12px;color:var(--text-tertiary)">已停用成员（${inactiveList.length}）</div>` +
+      inactiveList.map(p => `
+        <div class="org-person-row" style="gap:16px;opacity:.6">
+          <div style="display:flex;align-items:center;gap:12px;min-width:200px">
+            <span class="feishu-avatar" style="background:#b9b9b9;width:40px;height:40px;font-size:14px">${escapeHtml(p.name[0] || '?')}</span>
+            <div>
+              <div style="font-weight:600;font-size:14px;color:var(--text-primary);display:flex;align-items:center;gap:6px">
+                ${escapeHtml(p.name)}
+                <span class="status-tag" style="font-size:10px;padding:1px 6px;background:#eee;color:#888">已停用</span>
+              </div>
+              <div style="margin-top:4px;font-size:11px;color:var(--text-tertiary)">${p.feishuOpenId ? '飞书已绑定' : '未绑定飞书'}</div>
+            </div>
+          </div>
+          <div style="flex:1"></div>
+          <button class="table-edit-btn org-team-enable-btn" data-id="${p.id}">重新启用</button>
+        </div>`).join('');
+    listEl.appendChild(section);
+
+    section.querySelectorAll('.org-team-enable-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        btn.textContent = '处理中...';
+        try {
+          const target = inactiveList.find(x => x.id === btn.dataset.id);
+          if (!target || !target.recordId) throw new Error('找不到该成员记录');
+          const r = await fetch('/api/data/persons/' + target.recordId, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ isActive: true }),
+          });
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.error || '启用失败');
+          await loadFeishuData();
+          renderOrg();
+          renderDemand();
+          renderPlan();
+          renderDaily();
+          showToast(`${icon('check', 16)} 已重新启用 ${escapeHtml(target.name)}`);
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = '重新启用';
+          showToast(err.message || '启用失败');
+        }
+      });
+    });
+  }
+
   // 导入飞书按钮
   const importBtn = document.getElementById('importFeishuBtn');
   if (importBtn) {
@@ -11627,6 +11682,13 @@ function openPersonEdit(personId) {
               <label>日薪（元/天）</label>
               <input type="number" class="form-input" id="peDailySalary" value="${p.dailySalary||130}" min="0">
             </div>
+            <div class="form-field" style="grid-column:span 2">
+              <label>成员状态</label>
+              <label style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:13px;cursor:pointer">
+                <input type="checkbox" id="peInactive" style="accent-color:var(--accent)">
+                停用该成员（离职后勾选，停用后不参与人力成本统计，可在列表底部重新启用）
+              </label>
+            </div>
           </div>
         </div>
         <div class="modal-footer">
@@ -11661,29 +11723,53 @@ function openPersonEdit(personId) {
   document.getElementById('personEditCancel').onclick = close;
   modal.addEventListener('click', e => { if (e.target === modal) close(); });
 
-  document.getElementById('personEditSave').onclick = () => {
+  document.getElementById('personEditSave').onclick = async () => {
     const person = getPerson(personId);
     if (!person) return;
-    person.name = document.getElementById('peName').value.trim() || person.name;
-    const checked = [...modal.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value);
-    person.roles = checked;
+    const saveBtn = document.getElementById('personEditSave');
+    saveBtn.disabled = true;
+
+    const name = document.getElementById('peName').value.trim() || person.name;
+    const roles = [...modal.querySelectorAll('input[type=checkbox]:checked')]
+      .map(c => c.value)
+      .filter(v => v !== 'on');
     const empType = modal.querySelector('input[name=peEmpType]:checked').value;
-    person.employmentType = empType;
+    const payload = { name, roles, employmentType: EMPLOY_MAP_REV[empType] || '正式员工' };
+
     if (empType === 'formal') {
-      person.salary = parseFloat(document.getElementById('peSalary').value) || 0;
-      person.socialInsurance = parseFloat(document.getElementById('peSocial').value) || 0;
-      person.housingFund = parseFloat(document.getElementById('peHousingFund').value) || 0;
+      payload.salary = parseFloat(document.getElementById('peSalary').value) || 0;
+      payload.socialInsurance = parseFloat(document.getElementById('peSocial').value) || 0;
+      payload.housingFund = parseFloat(document.getElementById('peHousingFund').value) || 0;
     } else {
-      person.dailySalary = parseFloat(document.getElementById('peDailySalary').value) || 0;
-      person.socialInsurance = 0;
-      person.housingFund = 0;
+      payload.dailySalary = parseFloat(document.getElementById('peDailySalary').value) || 0;
+      payload.socialInsurance = 0;
+      payload.housingFund = 0;
     }
-    close();
-    renderOrg();
-    renderDemand();
-    renderPlan();
-    renderDaily();
-    showToast(`${icon('check', 16)} 成员信息已更新`);
+
+    const inactiveBox = document.getElementById('peInactive');
+    payload.isActive = !(inactiveBox && inactiveBox.checked);
+
+    try {
+      if (!person.recordId) throw new Error('该成员缺少记录 ID，无法保存到飞书');
+      const r = await fetch('/api/data/persons/' + person.recordId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || '保存失败');
+
+      await loadFeishuData();
+      close();
+      renderOrg();
+      renderDemand();
+      renderPlan();
+      renderDaily();
+      showToast(payload.isActive ? `${icon('check', 16)} 成员信息已更新` : `${icon('check', 16)} 该成员已停用`);
+    } catch (err) {
+      saveBtn.disabled = false;
+      showToast(err.message || '保存失败');
+    }
   };
 }
 

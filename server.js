@@ -800,6 +800,47 @@ app.post('/api/data/persons', authMiddleware, async (req, res) => {
   }
 });
 
+// ===== 更新人员信息（含启用/停用） =====
+app.put('/api/data/persons/:recordId', authMiddleware, async (req, res) => {
+  const { recordId } = req.params;
+  const fields = req.body || {};
+
+  try {
+    const tableId = process.env.FEISHU_TABLE_PERSONS;
+    const token = await getTenantToken();
+
+    const feishuFields = {};
+    if (fields.name !== undefined) feishuFields.name = fields.name;
+    if (fields.roles !== undefined) feishuFields.roles = fields.roles;
+    if (fields.employmentType !== undefined) feishuFields.employment_type = fields.employmentType;
+    if (fields.salary !== undefined) feishuFields.salary = fields.salary;
+    if (fields.dailySalary !== undefined) feishuFields.daily_salary = fields.dailySalary;
+    if (fields.socialInsurance !== undefined) feishuFields.social_insurance = fields.socialInsurance;
+    if (fields.housingFund !== undefined) feishuFields.housing_fund = fields.housingFund;
+    if (fields.energy !== undefined) feishuFields.energy = fields.energy;
+    if (fields.avatar !== undefined) feishuFields.avatar = fields.avatar;
+    if (fields.feishuOpenId !== undefined) feishuFields.feishu_open_id = fields.feishuOpenId;
+    if (fields.monthlyData !== undefined) feishuFields.monthly_data = fields.monthlyData;
+    if (fields.isActive !== undefined) feishuFields.is_active = fields.isActive;
+
+    if (!Object.keys(feishuFields).length) {
+      return res.status(400).json({ error: '没有需要更新的字段' });
+    }
+
+    const resData = await axios.put(
+      `${FEISHU_BASE}/bitable/v1/apps/${BASE_APP_TOKEN}/tables/${tableId}/records/${recordId}`,
+      { fields: feishuFields },
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+
+    if (resData.data.code !== 0) throw new Error(resData.data.msg);
+    res.json({ record: resData.data.data.record });
+  } catch (err) {
+    console.error('更新人员错误:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ===== 飞书组织：拉取通讯录成员 =====
 async function fetchFeishuOrgUsers() {
   const token = await getTenantToken();
