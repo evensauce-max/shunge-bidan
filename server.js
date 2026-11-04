@@ -805,6 +805,40 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
+// ===== 调试接口：检查飞书配置和 API 调用 =====
+app.get('/api/debug/feishu', async (req, res) => {
+  const result = {
+    env: {
+      hasAppId: !!process.env.FEISHU_APP_ID,
+      hasAppSecret: !!process.env.FEISHU_APP_SECRET,
+      hasBaseToken: !!process.env.FEISHU_BASE_APP_TOKEN,
+    },
+    tenantToken: null,
+    authenTest: null,
+  };
+
+  try {
+    const token = await getTenantToken();
+    result.tenantToken = token ? `token获取成功: ${token.substring(0, 10)}...` : 'token为空';
+
+    // 测试 authen/v1/access_token
+    const authenRes = await axios.post(
+      `${FEISHU_BASE}/authen/v1/access_token`,
+      { grant_type: 'authorization_code', code: 'debug_test_code' },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+    );
+    result.authenTest = { code: authenRes.data.code, msg: authenRes.data.msg };
+  } catch (err) {
+    result.error = err.message;
+    if (err.response) {
+      result.errorStatus = err.response.status;
+      result.errorData = err.response.data;
+    }
+  }
+
+  res.json(result);
+});
+
 // SPA fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
