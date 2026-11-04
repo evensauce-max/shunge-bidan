@@ -441,6 +441,15 @@ app.get('/api/data/all', authMiddleware, async (req, res) => {
         modified: f.modified || 0,
         delivered: f.delivered || 0,
         planned: f.planned || 0,
+        madeChar: f.made_char || 0,
+        madeScene: f.made_scene || 0,
+        madeSb: f.made_sb || 0,
+        modifiedChar: f.modified_char || 0,
+        modifiedScene: f.modified_scene || 0,
+        modifiedSb: f.modified_sb || 0,
+        deliveredChar: f.delivered_char || 0,
+        deliveredScene: f.delivered_scene || 0,
+        deliveredSb: f.delivered_sb || 0,
         isPlanRecord: f.is_plan_record === true,
         note: f.note || '',
       };
@@ -502,6 +511,15 @@ app.post('/api/data/schedules/batch', authMiddleware, async (req, res) => {
       fields.modified = r.modified || 0;
       fields.delivered = r.delivered || 0;
       fields.planned = r.planned || 0;
+      fields.made_char = r.madeChar || 0;
+      fields.made_scene = r.madeScene || 0;
+      fields.made_sb = r.madeSb || 0;
+      fields.modified_char = r.modifiedChar || 0;
+      fields.modified_scene = r.modifiedScene || 0;
+      fields.modified_sb = r.modifiedSb || 0;
+      fields.delivered_char = r.deliveredChar || 0;
+      fields.delivered_scene = r.deliveredScene || 0;
+      fields.delivered_sb = r.deliveredSb || 0;
       fields.is_plan_record = r.isPlanRecord === true;
       if (r.note) fields.note = r.note;
       return { fields };
@@ -531,6 +549,15 @@ app.put('/api/data/schedules/:recordId', authMiddleware, async (req, res) => {
     if (fields.planned !== undefined) feishuFields.planned = fields.planned;
     if (fields.note !== undefined) feishuFields.note = fields.note;
     if (fields.isPlanRecord !== undefined) feishuFields.is_plan_record = fields.isPlanRecord;
+    if (fields.madeChar !== undefined) feishuFields.made_char = fields.madeChar;
+    if (fields.madeScene !== undefined) feishuFields.made_scene = fields.madeScene;
+    if (fields.madeSb !== undefined) feishuFields.made_sb = fields.madeSb;
+    if (fields.modifiedChar !== undefined) feishuFields.modified_char = fields.modifiedChar;
+    if (fields.modifiedScene !== undefined) feishuFields.modified_scene = fields.modifiedScene;
+    if (fields.modifiedSb !== undefined) feishuFields.modified_sb = fields.modifiedSb;
+    if (fields.deliveredChar !== undefined) feishuFields.delivered_char = fields.deliveredChar;
+    if (fields.deliveredScene !== undefined) feishuFields.delivered_scene = fields.deliveredScene;
+    if (fields.deliveredSb !== undefined) feishuFields.delivered_sb = fields.deliveredSb;
 
     const token = await getTenantToken();
     const resData = await axios.put(
@@ -678,13 +705,14 @@ app.post('/api/data/tasks', authMiddleware, async (req, res) => {
 
     const fields = {};
     if (task.taskId) fields.task_id = task.taskId;
-    if (task.brand) fields.brand = [task.brand];
+    if (task.brand) fields.brand = task.brand;
     if (task.name) fields.name = task.name;
     if (task.startDate) fields.start_date = toFeishuDate(task.startDate);
     if (task.deliveryDate) fields.delivery_date = toFeishuDate(task.deliveryDate);
     if (task.totalVideos !== undefined) fields.total_videos = task.totalVideos;
     if (task.status) fields.status = [task.status];
     if (task.remark !== undefined) fields.remark = task.remark;
+    fields.is_deleted = false;
 
     // 关联人员
     if (task.directorIds && Array.isArray(task.directorIds)) {
@@ -729,13 +757,14 @@ app.put('/api/data/tasks/:recordId', authMiddleware, async (req, res) => {
     });
 
     const feishuFields = {};
-    if (fields.brand !== undefined) feishuFields.brand = [fields.brand];
+    if (fields.brand !== undefined) feishuFields.brand = fields.brand;
     if (fields.name !== undefined) feishuFields.name = fields.name;
     if (fields.startDate !== undefined) feishuFields.start_date = toFeishuDate(fields.startDate);
     if (fields.deliveryDate !== undefined) feishuFields.delivery_date = toFeishuDate(fields.deliveryDate);
     if (fields.totalVideos !== undefined) feishuFields.total_videos = fields.totalVideos;
     if (fields.status !== undefined) feishuFields.status = [fields.status];
     if (fields.remark !== undefined) feishuFields.remark = fields.remark;
+    if (fields.isDeleted !== undefined) feishuFields.is_deleted = fields.isDeleted;
 
     if (fields.directorIds) {
       feishuFields.director = fields.directorIds.filter(id => personIdToRecordId[id]).map(id => ({ id: personIdToRecordId[id] }));
@@ -757,6 +786,186 @@ app.put('/api/data/tasks/:recordId', authMiddleware, async (req, res) => {
     res.json({ record: resData.data.data.record });
   } catch (err) {
     console.error('更新商单错误:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== 写入接口：永久删除商单（连带台账/资产计划/排产记录） =====
+app.delete('/api/data/tasks/:recordId', authMiddleware, async (req, res) => {
+  const { recordId } = req.params;
+  try {
+    const token = await getTenantToken();
+    const taskTable = process.env.FEISHU_TABLE_TASKS;
+
+    const relatedTables = [
+      process.env.FEISHU_TABLE_SCHEDULES,
+      process.env.FEISHU_TABLE_LEDGER,
+      process.env.FEISHU_TABLE_ASSET_PLAN,
+    ];
+    for (const tableId of relatedTables) {
+      if (!tableId) continue;
+      const raw = await baseGetAllRecords(tableId);
+      const ids = raw
+        .filter(r => extractLinkIds(r.fields.task).includes(recordId))
+        .map(r => r.record_id);
+      if (ids.length) await baseBatchDelete(tableId, ids);
+    }
+
+    await axios.delete(
+      `${FEISHU_BASE}/bitable/v1/apps/${BASE_APP_TOKEN}/tables/${taskTable}/records/${recordId}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('删除商单错误:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== 写入接口：台账整单同步（先清旧记录，再写入当前台账） =====
+app.post('/api/data/ledger/sync', authMiddleware, async (req, res) => {
+  const { taskId, items } = req.body;
+  if (!taskId || !Array.isArray(items)) {
+    return res.status(400).json({ error: '缺少 taskId 或 items' });
+  }
+
+  try {
+    const tableId = process.env.FEISHU_TABLE_LEDGER;
+    const taskTable = process.env.FEISHU_TABLE_TASKS;
+    const tasksRaw = await baseGetAllRecords(taskTable);
+    const taskRec = tasksRaw.find(t => (t.fields.task_id || t.record_id) === taskId);
+    if (!taskRec) return res.status(404).json({ error: '商单不存在' });
+
+    const ledgerRaw = await baseGetAllRecords(tableId);
+    const oldIds = ledgerRaw
+      .filter(r => extractLinkIds(r.fields.task).includes(taskRec.record_id))
+      .map(r => r.record_id);
+    if (oldIds.length) await baseBatchDelete(tableId, oldIds);
+
+    const records = items
+      .filter(i => i.itemName || i.videoType)
+      .map(i => ({
+        fields: {
+          task: [{ id: taskRec.record_id }],
+          item_name: i.videoType || i.itemName || '',
+          unit_price: Number(i.unitPrice) || 0,
+          quantity: Number(i.quantity) || 0,
+          amount: (Number(i.unitPrice) || 0) * (Number(i.quantity) || 0),
+          remark: i.remark || '',
+        },
+      }));
+    if (records.length) await baseBatchCreate(tableId, records);
+
+    res.json({ success: true, count: records.length });
+  } catch (err) {
+    console.error('同步台账错误:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== 写入接口：排产计划整单同步（编导/AI制作师/资产设计师，资产明细另存资产计划表） =====
+app.post('/api/data/schedules/sync-plan', authMiddleware, async (req, res) => {
+  const { taskId, records } = req.body;
+  if (!taskId || !Array.isArray(records)) {
+    return res.status(400).json({ error: '缺少 taskId 或 records' });
+  }
+
+  try {
+    const tableId = process.env.FEISHU_TABLE_SCHEDULES;
+    const [tasksRaw, personsRaw, schedulesRaw] = await Promise.all([
+      baseGetAllRecords(process.env.FEISHU_TABLE_TASKS),
+      baseGetAllRecords(process.env.FEISHU_TABLE_PERSONS),
+      baseGetAllRecords(tableId),
+    ]);
+
+    const taskRec = tasksRaw.find(t => (t.fields.task_id || t.record_id) === taskId);
+    if (!taskRec) return res.status(404).json({ error: '商单不存在' });
+
+    const personIdToRecordId = {};
+    personsRaw.forEach(p => { personIdToRecordId[p.fields.person_id || p.record_id] = p.record_id; });
+
+    // 清除该商单旧的排产计划记录（保留员工每日实际产出记录）
+    const oldIds = schedulesRaw
+      .filter(r => extractLinkIds(r.fields.task).includes(taskRec.record_id) && r.fields.is_plan_record === true)
+      .map(r => r.record_id);
+    if (oldIds.length) await baseBatchDelete(tableId, oldIds);
+
+    const feishuRecords = records
+      .map(r => {
+        const fields = {
+          task: [{ id: taskRec.record_id }],
+          role: [r.role],
+          planned: Number(r.planned) || 0,
+          made: Number(r.made) || 0,
+          modified: Number(r.modified) || 0,
+          delivered: Number(r.delivered) || 0,
+          is_plan_record: true,
+        };
+        if (r.date) fields.date = toFeishuDate(r.date);
+        if (r.personId && personIdToRecordId[r.personId]) {
+          fields.person = [{ id: personIdToRecordId[r.personId] }];
+        }
+        if (r.note) fields.note = r.note;
+        return { fields };
+      });
+    if (feishuRecords.length) await baseBatchCreate(tableId, feishuRecords);
+
+    res.json({ success: true, count: feishuRecords.length });
+  } catch (err) {
+    console.error('同步排产计划错误:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== 写入接口：资产计划整单同步 =====
+app.post('/api/data/asset-plan/sync', authMiddleware, async (req, res) => {
+  const { taskId, records } = req.body;
+  if (!taskId || !Array.isArray(records)) {
+    return res.status(400).json({ error: '缺少 taskId 或 records' });
+  }
+
+  try {
+    const tableId = process.env.FEISHU_TABLE_ASSET_PLAN;
+    const [tasksRaw, personsRaw, assetRaw] = await Promise.all([
+      baseGetAllRecords(process.env.FEISHU_TABLE_TASKS),
+      baseGetAllRecords(process.env.FEISHU_TABLE_PERSONS),
+      baseGetAllRecords(tableId),
+    ]);
+
+    const taskRec = tasksRaw.find(t => (t.fields.task_id || t.record_id) === taskId);
+    if (!taskRec) return res.status(404).json({ error: '商单不存在' });
+
+    const personIdToRecordId = {};
+    personsRaw.forEach(p => { personIdToRecordId[p.fields.person_id || p.record_id] = p.record_id; });
+
+    const oldIds = assetRaw
+      .filter(r => extractLinkIds(r.fields.task).includes(taskRec.record_id))
+      .map(r => r.record_id);
+    if (oldIds.length) await baseBatchDelete(tableId, oldIds);
+
+    const feishuRecords = records.map(r => {
+      const fields = {
+        task: [{ id: taskRec.record_id }],
+        video_index: Number(r.videoIndex) || 1,
+        asset_type: [r.assetType],
+        plan_qty: Number(r.planQty) || 0,
+        made: Number(r.made) || 0,
+        modified: Number(r.modified) || 0,
+        delivered: Number(r.delivered) || 0,
+        note: r.note || '',
+      };
+      if (r.planDate) fields.plan_date = toFeishuDate(r.planDate);
+      if (r.editDate) fields.edit_date = toFeishuDate(r.editDate);
+      if (r.personId && personIdToRecordId[r.personId]) {
+        fields.person_id = [{ id: personIdToRecordId[r.personId] }];
+      }
+      return { fields };
+    });
+    if (feishuRecords.length) await baseBatchCreate(tableId, feishuRecords);
+
+    res.json({ success: true, count: feishuRecords.length });
+  } catch (err) {
+    console.error('同步资产计划错误:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

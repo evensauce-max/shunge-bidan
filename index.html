@@ -6500,11 +6500,8 @@
       <div class="form-grid">
         <div class="form-field">
           <label>品牌</label>
-          <select class="form-select" id="editBrand">
-            <option value="BC">BC</option>
-            <option value="Momcozy">Momcozy</option>
-            <option value="其他品牌">其他品牌</option>
-          </select>
+          <input type="text" class="form-input" id="editBrand" list="editBrandOptions" placeholder="输入或选择品牌" autocomplete="off">
+          <datalist id="editBrandOptions"></datalist>
         </div>
         <div class="form-field">
           <label>月份</label>
@@ -6800,7 +6797,7 @@ async function loadFeishuData() {
     DATA.persons = mappedPersons.filter(p => p.isActive);
 
     // 2. 商单适配
-    DATA.tasks = data.tasks.map(t => {
+    const mappedTasks = data.tasks.map(t => {
       const directors = t.directorIds || [];
       const aiMakers = t.aiArtistIds || [];
       const assetDesigners = t.assetDesignerIds || [];
@@ -6816,6 +6813,26 @@ async function loadFeishuData() {
         unitPrice: l.unitPrice || 0,
         quantity: l.quantity || 0,
       }));
+
+      // 资产计划适配（飞书数组 → 按视频序号分组的对象）
+      const assetPlan = {};
+      (t.assetPlan || []).forEach(a => {
+        const vi = a.videoIndex || 1;
+        const type = ASSET_LABEL_TO_TYPE[a.assetType];
+        if (!type) return;
+        if (!assetPlan[vi]) assetPlan[vi] = { asset: {} };
+        assetPlan[vi].asset[type] = {
+          plan: a.planQty || 0,
+          qty: a.planQty || 0,
+          made: a.made || 0,
+          modified: a.modified || 0,
+          delivered: a.delivered || 0,
+          date: a.planDate || '',
+          editDate: a.editDate || '',
+          note: a.note || '',
+          personId: a.personId || '',
+        };
+      });
 
       return {
         id: t.id,
@@ -6835,10 +6852,11 @@ async function loadFeishuData() {
         startDate: t.startDate,
         description: t.remark || '',
         ledger: ledger,
-        assetPlan: t.assetPlan || [],
+        assetPlan: assetPlan,
         isDeleted: t.isDeleted === true,
       };
-    }).filter(t => !t.isDeleted);
+    });
+    DATA.tasks = mappedTasks.filter(t => !t.isDeleted);
 
     // 3. 排产记录适配
     DATA.schedules = data.schedules.map(s => ({
@@ -6851,8 +6869,28 @@ async function loadFeishuData() {
       modified: s.modified || 0,
       delivered: s.delivered || 0,
       planned: s.planned || 0,
+      madeChar: s.madeChar || 0,
+      madeScene: s.madeScene || 0,
+      madeSb: s.madeSb || 0,
+      modifiedChar: s.modifiedChar || 0,
+      modifiedScene: s.modifiedScene || 0,
+      modifiedSb: s.modifiedSb || 0,
+      deliveredChar: s.deliveredChar || 0,
+      deliveredScene: s.deliveredScene || 0,
+      deliveredSb: s.deliveredSb || 0,
       isPlanRecord: s.isPlanRecord === true,
+      deliverNote: s.note || '',
       note: s.note || '',
+    }));
+
+    // 回收站：飞书中被软删除的商单（连同其排产记录，从主数据中剔除）
+    const deletedTaskIds = new Set(mappedTasks.filter(t => t.isDeleted).map(t => t.id));
+    const recycledSchedules = DATA.schedules.filter(s => deletedTaskIds.has(s.taskId));
+    DATA.schedules = DATA.schedules.filter(s => !deletedTaskIds.has(s.taskId));
+    DATA.recycledTasks = mappedTasks.filter(t => t.isDeleted).map(t => ({
+      task: t,
+      schedules: recycledSchedules.filter(s => s.taskId === t.id),
+      deletedAt: '',
     }));
 
     // 4. 计算商单完成数（从 AI 制作师的 delivered 统计）
@@ -6885,32 +6923,131 @@ function safeJsonParse(str, fallback) {
   try { return JSON.parse(str); } catch { return fallback; }
 }
 
-// 保存数据到飞书（通用写入封装）
+// 保存数据到飞书（通用写入封装，失败抛错，由调用方决定是否回滚 UI）
 async function saveToFeishu(type, payload) {
   if (!feishuDataLoaded) return null;
-  try {
-    const endpoints = {
-      'schedules-batch': { method: 'POST', url: '/api/data/schedules/batch' },
-      'schedules-update': { method: 'PUT', url: `/api/data/schedules/${payload.recordId}` },
-      'asset-plan-update': { method: 'PUT', url: `/api/data/asset-plan/${payload.recordId}` },
-      'task-create': { method: 'POST', url: '/api/data/tasks' },
-      'task-update': { method: 'PUT', url: `/api/data/tasks/${payload.recordId}` },
-      'person-create': { method: 'POST', url: '/api/data/persons' },
-    };
-    const ep = endpoints[type];
-    if (!ep) return null;
+  const endpoints = {
+    'schedules-batch': { method: 'POST', url: '/api/data/schedules/batch' },
+    'schedules-update': { method: 'PUT', url: `/api/data/schedules/${payload.recordId}` },
+    'schedules-plan-sync': { method: 'POST', url: '/api/data/schedules/sync-plan' },
+    'asset-plan-sync': { method: 'POST', url: '/api/data/asset-plan/sync' },
+    'ledger-sync': { method: 'POST', url: '/api/data/ledger/sync' },
+    'task-create': { method: 'POST', url: '/api/data/tasks' },
+    'task-update': { method: 'PUT', url: `/api/data/tasks/${payload.recordId}` },
+    'task-delete': { method: 'DELETE', url: `/api/data/tasks/${payload.recordId}` },
+    'person-create': { method: 'POST', url: '/api/data/persons' },
+  };
+  const ep = endpoints[type];
+  if (!ep) return null;
 
-    const res = await fetch(ep.url, {
-      method: ep.method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload.fields ? payload.fields : payload),
+  const res = await fetch(ep.url, {
+    method: ep.method,
+    headers: { 'Content-Type': 'application/json' },
+    body: ep.method === 'DELETE' ? undefined : JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error((await res.text()).slice(0, 200));
+  return await res.json();
+}
+
+// 资产类型：前端 key <-> 飞书单选文案
+const ASSET_TYPE_TO_LABEL = { char: '角色', scene: '场景', sb: '分镜', other: '其他' };
+const ASSET_LABEL_TO_TYPE = { '角色': 'char', '场景': 'scene', '分镜': 'sb', '其他': 'other' };
+
+// 商单 → 飞书字段
+function taskToFeishuFields(task) {
+  return {
+    brand: task.brand,
+    name: task.name,
+    startDate: task.startDate,
+    deliveryDate: task.deliveryDate,
+    totalVideos: task.totalVideos,
+    status: STATUS_MAP_REV[task.status] || '待排产',
+    remark: task.description || '',
+    directorIds: getTaskPersonIds(task.director),
+    aiArtistIds: getTaskPersonIds(task.aiMaker),
+    assetDesignerIds: getTaskPersonIds(task.assetDesigner),
+  };
+}
+
+// 商单资产排产对象 → 资产计划表记录
+function buildAssetPlanRecords(task) {
+  const out = [];
+  const plan = task.assetPlan || {};
+  Object.keys(plan).forEach(vi => {
+    const asset = (plan[vi] && plan[vi].asset) || {};
+    Object.keys(asset).forEach(type => {
+      if (!ASSET_TYPE_TO_LABEL[type]) return;
+      const a = asset[type] || {};
+      const qty = a.qty !== undefined ? a.qty : (a.plan || 0);
+      if (!qty && !a.date && !a.made && !a.modified && !a.delivered) return;
+      out.push({
+        videoIndex: parseInt(vi),
+        assetType: ASSET_TYPE_TO_LABEL[type],
+        planQty: qty || 0,
+        planDate: a.date || '',
+        made: a.made || 0,
+        modified: a.modified || 0,
+        delivered: a.delivered || 0,
+        editDate: a.editDate || '',
+        personId: a.personId || '',
+        note: a.note || '',
+      });
     });
-    if (!res.ok) throw new Error(await res.text());
-    return await res.json();
-  } catch (err) {
-    console.warn('[飞书] 写入失败:', type, err.message);
-    showToast('保存失败: ' + err.message);
-    return null;
+  });
+  return out;
+}
+
+// 排产记录写入飞书（有记录 ID 则更新，没有则新建并回填 ID）
+function persistScheduleRecord(rec) {
+  if (!feishuDataLoaded || !rec) return;
+  if (rec.id) {
+    const fields = {
+      date: rec.date,
+      made: rec.made || 0,
+      modified: rec.modified || 0,
+      delivered: rec.delivered || 0,
+      planned: rec.planned || 0,
+      note: rec.deliverNote || '',
+      madeChar: rec.madeChar || 0,
+      madeScene: rec.madeScene || 0,
+      madeSb: rec.madeSb || 0,
+      modifiedChar: rec.modifiedChar || 0,
+      modifiedScene: rec.modifiedScene || 0,
+      modifiedSb: rec.modifiedSb || 0,
+      deliveredChar: rec.deliveredChar || 0,
+      deliveredScene: rec.deliveredScene || 0,
+      deliveredSb: rec.deliveredSb || 0,
+    };
+    saveToFeishu('schedules-update', { recordId: rec.id, fields })
+      .catch(err => showToast('同步飞书失败：' + err.message));
+  } else {
+    const payload = {
+      date: rec.date,
+      personId: rec.personId,
+      taskId: rec.taskId,
+      role: rec.role,
+      planned: rec.planned || 0,
+      made: rec.made || 0,
+      modified: rec.modified || 0,
+      delivered: rec.delivered || 0,
+      note: rec.deliverNote || '',
+      isPlanRecord: rec.isPlanRecord === true,
+      madeChar: rec.madeChar || 0,
+      madeScene: rec.madeScene || 0,
+      madeSb: rec.madeSb || 0,
+      modifiedChar: rec.modifiedChar || 0,
+      modifiedScene: rec.modifiedScene || 0,
+      modifiedSb: rec.modifiedSb || 0,
+      deliveredChar: rec.deliveredChar || 0,
+      deliveredScene: rec.deliveredScene || 0,
+      deliveredSb: rec.deliveredSb || 0,
+    };
+    saveToFeishu('schedules-batch', { records: [payload] })
+      .then(r => {
+        const created = r && r.records && r.records[0];
+        if (created) rec.id = created.record_id || created.id;
+      })
+      .catch(err => showToast('同步飞书失败：' + err.message));
   }
 }
 
@@ -7580,6 +7717,9 @@ function saveVideoOutput(taskId, videoIndex, role, date, personId, data) {
     if (rec.made < 0) rec.made = 0;
     if (rec.modified < 0) rec.modified = 0;
     if (rec.delivered < 0) rec.delivered = 0;
+
+    // 同步到飞书
+    persistScheduleRecord(rec);
   }
 }
 
@@ -8264,20 +8404,22 @@ function renderDemand() {
     renderDemand();
   };
 
-  // 品牌下拉列表初始化
+  // 品牌下拉列表初始化（从商单动态提取，包含手动录入的自定义品牌）
   const brandSelect = document.getElementById('demandBrandSelect');
-  if (brandSelect.options.length <= 1) {
-    DATA.brands.forEach(b => {
-      const opt = document.createElement('option');
-      opt.value = b; opt.textContent = b;
-      brandSelect.appendChild(opt);
-    });
-    brandSelect.onchange = () => {
-      demandBrandFilter = brandSelect.value;
-      renderDemand();
-    };
-  }
+  const brandSet = new Set(DATA.tasks.map(t => t.brand).filter(Boolean));
+  ['BC', 'Momcozy'].forEach(b => brandSet.add(b));
+  while (brandSelect.options.length > 1) brandSelect.remove(1);
+  brandSet.forEach(b => {
+    const opt = document.createElement('option');
+    opt.value = b; opt.textContent = b;
+    brandSelect.appendChild(opt);
+  });
+  if (demandBrandFilter !== 'all' && !brandSet.has(demandBrandFilter)) demandBrandFilter = 'all';
   brandSelect.value = demandBrandFilter;
+  brandSelect.onchange = () => {
+    demandBrandFilter = brandSelect.value;
+    renderDemand();
+  };
 
   // 按开始日期的月份分组
   const monthGroups = {};
@@ -9234,6 +9376,12 @@ function openPlanModal(taskId, personId, readOnly = false) {
     for (var vi = 1; vi <= task.totalVideos; vi++) {
       if (task.assetPlan[vi] && task.assetPlan[vi].asset) {
         planVideoData[vi].asset = JSON.parse(JSON.stringify(task.assetPlan[vi].asset));
+        // 兼容旧数据结构，统一 qty / plan 两个字段
+        ['char', 'scene', 'sb', 'other'].forEach(function(type) {
+          var a = planVideoData[vi].asset[type];
+          if (a && a.qty === undefined) a.qty = a.plan || 0;
+          if (a && a.plan === undefined) a.plan = a.qty || 0;
+        });
       }
     }
   } else {
@@ -9411,7 +9559,9 @@ function toggleAssetRow(idx) {
 }
 
 function updateAssetQty(videoIdx, type, val) {
-  planVideoData[videoIdx].asset[type].qty = parseInt(val) || 0;
+  var qtyVal = parseInt(val) || 0;
+  planVideoData[videoIdx].asset[type].qty = qtyVal;
+  planVideoData[videoIdx].asset[type].plan = qtyVal;
   var v = planVideoData[videoIdx];
   var total = Object.values(v.asset).reduce(function(sum, a) { return sum + (a.qty || 0); }, 0);
   var summaryEl = document.querySelector('#pvRow-' + videoIdx + ' .pv-asset-summary-text');
@@ -9819,8 +9969,10 @@ function savePlan() {
       };
     }
   });
+  var planRecords = [];
+
   Object.values(assetAgg).forEach(function(rec) {
-    DATA.schedules.push({
+    var nr = {
       date: rec.date,
       personId: rec.personId,
       taskId: task.id,
@@ -9833,11 +9985,13 @@ function savePlan() {
       plannedOther: rec.other || 0,
       made: 0, modified: 0, delivered: 0,
       deliverNote: '', confirmed: false
-    });
+    };
+    DATA.schedules.push(nr);
+    planRecords.push(nr);
   });
 
   Object.values(aggregated).forEach(function(rec) {
-    DATA.schedules.push({
+    var nr = {
       date: rec.date,
       personId: rec.personId,
       taskId: task.id,
@@ -9850,8 +10004,28 @@ function savePlan() {
       plannedOther: rec.plannedOther || 0,
       made: 0, modified: 0, delivered: 0,
       deliverNote: '', confirmed: false
-    });
+    };
+    DATA.schedules.push(nr);
+    planRecords.push(nr);
   });
+
+  // 同步到飞书：排产计划记录 + 资产计划记录
+  if (feishuDataLoaded) {
+    saveToFeishu('schedules-plan-sync', {
+      taskId: task.id,
+      records: planRecords.map(function(r) {
+        return {
+          date: r.date, personId: r.personId, role: r.role,
+          planned: r.planned, made: 0, modified: 0, delivered: 0, note: ''
+        };
+      })
+    }).catch(function(err) { showToast('排产计划同步飞书失败：' + err.message); });
+
+    saveToFeishu('asset-plan-sync', {
+      taskId: task.id,
+      records: buildAssetPlanRecords(task)
+    }).catch(function(err) { showToast('资产计划同步飞书失败：' + err.message); });
+  }
 
   closePlanModal();
   showToast(icon('check', 16) + ' 排产已保存');
@@ -10716,6 +10890,7 @@ function saveOne(taskId, personId) {
 
   // 保存后自动锁定（确认）
   s.confirmed = true;
+  persistScheduleRecord(s);
   renderDaily(); renderDashboard(); renderDemand(); renderPlan();
   showToast(`${icon('check', 16)} 已保存`);
 }
@@ -10743,6 +10918,7 @@ function saveAll() {
 
     // 全部保存后全部锁定
     s.confirmed = true;
+    persistScheduleRecord(s);
   });
   renderDaily(); renderDashboard(); renderDemand(); renderPlan();
   showToast(`${icon('check', 16)} 全部保存成功`);
@@ -11593,7 +11769,7 @@ function renderOrgCost() {
 
   // 保存月度数据按钮
   listEl.querySelectorAll('.org-save-monthly-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const pid = btn.dataset.id;
       const p = getPerson(pid);
       if (!p) return;
@@ -11608,6 +11784,22 @@ function renderOrgCost() {
         energyRatio: energy,
         confirmed: true,
       };
+
+      // 同步月度数据到飞书人员表
+      if (feishuDataLoaded && p.recordId) {
+        try {
+          const r = await fetch('/api/data/persons/' + p.recordId, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ monthlyData: JSON.stringify(p.monthlyData) }),
+          });
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.error || '保存失败');
+        } catch (err) {
+          showToast('月度数据保存失败（飞书同步异常）：' + err.message);
+          return;
+        }
+      }
 
       delete orgEditingMonthly[pid];
       renderOrgCost();
@@ -12196,6 +12388,7 @@ function openTaskEdit(taskId) {
 
   document.querySelector('#taskEditModal .modal-title').textContent = '编辑商单';
   document.getElementById('taskEditSub').textContent = task.name;
+  fillBrandDatalist();
   document.getElementById('editBrand').value = task.brand;
 
   // 从名称解析月份和批次
@@ -12227,10 +12420,20 @@ function openTaskEdit(taskId) {
 }
 
 function updateNamePreview() {
-  const brand = document.getElementById('editBrand').value;
+  const brand = document.getElementById('editBrand').value.trim() || '品牌';
   const month = document.getElementById('editMonth').value;
   const batch = document.getElementById('editBatch').value;
   document.getElementById('editNamePreview').textContent = `${brand}-${month}-${batch}`;
+}
+
+// 填充品牌候选（来自已有商单，品牌名称可自由输入）
+function fillBrandDatalist() {
+  const list = document.getElementById('editBrandOptions');
+  if (!list) return;
+  const brands = new Set();
+  DATA.tasks.forEach(t => { if (t.brand && t.brand !== '其他品牌') brands.add(t.brand); });
+  ['BC', 'Momcozy'].forEach(b => brands.add(b));
+  list.innerHTML = Array.from(brands).map(b => `<option value="${escapeHtml(b)}"></option>`).join('');
 }
 
 function closeTaskEdit() {
@@ -12248,6 +12451,7 @@ function openTaskAdd() {
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const nextWeek = new Date(); nextWeek.setDate(nextWeek.getDate()+14);
 
+  fillBrandDatalist();
   document.getElementById('editBrand').value = 'BC';
   document.getElementById('editMonth').value = months[today.getMonth()];
   document.getElementById('editBatch').value = '1';
@@ -12278,7 +12482,17 @@ function deleteTask() {
     message: `确定要删除「${task.name}」吗？删除后该商单会移入回收站，所有排产记录和台账数据一并保留，可随时恢复。`,
     okText: '删除',
     cancelText: '取消',
-    onOk: () => {
+    onOk: async () => {
+      // 飞书软删除（保留记录，可恢复）
+      if (feishuDataLoaded && task.recordId) {
+        try {
+          await saveToFeishu('task-update', { recordId: task.recordId, fields: { isDeleted: true } });
+        } catch (err) {
+          showToast('删除失败（飞书同步异常）：' + err.message);
+          return;
+        }
+      }
+
       // 收集关联的排产记录
       const taskSchedules = DATA.schedules.filter(s => s.taskId === editingTaskId);
 
@@ -12309,8 +12523,14 @@ function deleteTask() {
   });
 }
 
-function saveTaskEdit() {
-  const brand = document.getElementById('editBrand').value;
+async function saveTaskEdit() {
+  const brandInput = document.getElementById('editBrand');
+  const brand = brandInput.value.trim();
+  if (!brand) {
+    showToast('请输入品牌名称');
+    brandInput.focus();
+    return;
+  }
   const month = document.getElementById('editMonth').value;
   const batch = document.getElementById('editBatch').value;
   const name = `${brand}-${month}-${batch}`;
@@ -12331,15 +12551,36 @@ function saveTaskEdit() {
     const task = getTask(editingTaskId);
     if (!task) return;
 
-    task.name = name;
-    task.brand = brand;
-    task.totalVideos = parseInt(document.getElementById('editTotal').value) || 0;
-    task.startDate = document.getElementById('editStartDate').value;
-    task.deliveryDate = document.getElementById('editDeliveryDate').value;
-    task.director = getMultiSelectValue('editDirectorList');
-    task.aiMaker = getMultiSelectValue('editAiMakerList');
-    task.assetDesigner = getMultiSelectValue('editAssetDesignerList');
-    task.description = document.getElementById('editDesc').value;
+    const values = {
+      name,
+      brand,
+      totalVideos: parseInt(document.getElementById('editTotal').value) || 0,
+      startDate: document.getElementById('editStartDate').value,
+      deliveryDate: document.getElementById('editDeliveryDate').value,
+      director: getMultiSelectValue('editDirectorList'),
+      aiMaker: getMultiSelectValue('editAiMakerList'),
+      assetDesigner: getMultiSelectValue('editAssetDesignerList'),
+      description: document.getElementById('editDesc').value,
+    };
+
+    if (feishuDataLoaded) {
+      try {
+        if (task.recordId) {
+          await saveToFeishu('task-update', {
+            recordId: task.recordId,
+            fields: taskToFeishuFields({ ...task, ...values }),
+          });
+        } else {
+          const r = await saveToFeishu('task-create', { task: taskToFeishuFields({ ...task, ...values }) });
+          if (r && r.record) task.recordId = r.record.record_id || r.record.id;
+        }
+      } catch (err) {
+        showToast('保存到飞书失败：' + err.message);
+        return;
+      }
+    }
+
+    Object.assign(task, values);
 
     closeTaskEdit();
     renderDemand();
@@ -12349,7 +12590,7 @@ function saveTaskEdit() {
   } else {
     // 新增模式
     const newId = 't' + (Date.now());
-    DATA.tasks.push({
+    const newTask = {
       id: newId,
       name,
       brand,
@@ -12361,7 +12602,19 @@ function saveTaskEdit() {
       aiMaker: getMultiSelectValue('editAiMakerList'),
       assetDesigner: getMultiSelectValue('editAssetDesignerList'),
       description: document.getElementById('editDesc').value,
-    });
+    };
+
+    if (feishuDataLoaded) {
+      try {
+        const r = await saveToFeishu('task-create', { task: taskToFeishuFields(newTask) });
+        if (r && r.record) newTask.recordId = r.record.record_id || r.record.id;
+      } catch (err) {
+        showToast('创建失败（飞书同步异常）：' + err.message);
+        return;
+      }
+    }
+
+    DATA.tasks.push(newTask);
 
     closeTaskEdit();
     renderDemand();
@@ -12388,7 +12641,7 @@ function updateRecycleBadge() {
   }
 }
 
-function restoreTask(recycleIdx) {
+async function restoreTask(recycleIdx) {
   const item = DATA.recycledTasks[recycleIdx];
   if (!item) return;
 
@@ -12397,6 +12650,16 @@ function restoreTask(recycleIdx) {
   if (duplicate) {
     showToast(`恢复失败：商单「${item.task.name}」已存在`);
     return;
+  }
+
+  // 飞书取消软删除
+  if (feishuDataLoaded && item.task.recordId) {
+    try {
+      await saveToFeishu('task-update', { recordId: item.task.recordId, fields: { isDeleted: false } });
+    } catch (err) {
+      showToast('恢复失败（飞书同步异常）：' + err.message);
+      return;
+    }
   }
 
   // 恢复任务
@@ -12426,7 +12689,15 @@ function permanentlyDelete(recycleIdx) {
     message: `确定要永久删除「${item.task.name}」吗？此操作不可撤销。`,
     okText: '永久删除',
     cancelText: '取消',
-    onOk: () => {
+    onOk: async () => {
+      if (feishuDataLoaded && item.task.recordId) {
+        try {
+          await saveToFeishu('task-delete', { recordId: item.task.recordId });
+        } catch (err) {
+          showToast('永久删除失败（飞书同步异常）：' + err.message);
+          return;
+        }
+      }
       DATA.recycledTasks.splice(recycleIdx, 1);
       renderRecycle();
       updateRecycleBadge();
@@ -12443,7 +12714,18 @@ function emptyRecycle() {
     message: `确定要清空回收站吗？共 ${DATA.recycledTasks.length} 个商单将被永久删除，此操作不可撤销。`,
     okText: '全部清空',
     cancelText: '取消',
-    onOk: () => {
+    onOk: async () => {
+      if (feishuDataLoaded) {
+        for (const item of DATA.recycledTasks) {
+          if (!item.task.recordId) continue;
+          try {
+            await saveToFeishu('task-delete', { recordId: item.task.recordId });
+          } catch (err) {
+            showToast('清空失败（飞书同步异常）：' + err.message);
+            return;
+          }
+        }
+      }
       DATA.recycledTasks = [];
       renderRecycle();
       updateRecycleBadge();
@@ -12476,7 +12758,7 @@ function renderRecycle() {
           </div>
           <div class="recycle-info">
             <h3>${t.name}</h3>
-            <p>${t.brand} · ${t.totalVideos} 条视频 · 排产记录 ${schCount} 条 · 删除于 ${item.deletedAt}</p>
+            <p>${t.brand} · ${t.totalVideos} 条视频 · 排产记录 ${schCount} 条${item.deletedAt ? ` · 删除于 ${item.deletedAt}` : ''}</p>
           </div>
         </div>
         <div class="recycle-item-right">
@@ -12594,15 +12876,34 @@ function closeLedger() {
   ledgerTaskId = null;
 }
 
-function saveLedger() {
+async function saveLedger() {
   const task = getTask(ledgerTaskId);
   if (!task) return;
-  task.ledger = ledgerTemp.map(r => ({
+
+  const items = ledgerTemp.map(r => ({
     templateId: r.templateId,
     videoType: r.videoType,
     unitPrice: Number(r.unitPrice) || 0,
     quantity: Number(r.quantity) || 0,
   }));
+
+  if (feishuDataLoaded && task.id) {
+    try {
+      await saveToFeishu('ledger-sync', {
+        taskId: task.id,
+        items: items.map(r => ({
+          itemName: r.videoType || r.templateId,
+          unitPrice: r.unitPrice,
+          quantity: r.quantity,
+        })),
+      });
+    } catch (err) {
+      showToast('台账保存失败（飞书同步异常）：' + err.message);
+      return;
+    }
+  }
+
+  task.ledger = items;
   closeLedger();
   showToast(`${icon('check', 16)} 台账已保存`);
 }
@@ -13557,7 +13858,7 @@ function toggleAssetEditorDeliver(type) {
   }
 }
 
-function saveDailyCell() {
+async function saveDailyCell() {
   if (!currentDailyCell) return;
 
   const taskId = currentDailyCell.taskId;
@@ -13600,6 +13901,7 @@ function saveDailyCell() {
     const modifiedVal = parseInt(document.getElementById('assetModifiedInput').value) || 0;
     const deliveredVal = currentDailyCell.delivered ? 1 : 0;
     currentDailyCell.record.plan = planVal;
+    currentDailyCell.record.qty = planVal;
     currentDailyCell.record.made = madeVal;
     currentDailyCell.record.modified = modifiedVal;
     currentDailyCell.record.delivered = deliveredVal;
@@ -13616,6 +13918,19 @@ function saveDailyCell() {
       currentDailyCell.personId,
       { made: madeVal, modified: modifiedVal, delivered: deliveredVal }
     );
+  }
+
+  // 资产类改动同步到飞书资产计划表
+  if ((currentDailyCell.isAssetBatchEdit || currentDailyCell.isAssetEdit) && feishuDataLoaded) {
+    const task = getTask(taskId);
+    if (task) {
+      try {
+        await saveToFeishu('asset-plan-sync', { taskId: task.id, records: buildAssetPlanRecords(task) });
+      } catch (err) {
+        showToast('资产同步飞书失败：' + err.message);
+        return;
+      }
+    }
   }
 
   closeDailyCellModal();
@@ -13682,8 +13997,9 @@ function initTaskEditModal() {
     if(e.target.id==='taskEditModal') closeTaskEdit();
   });
 
-  // 名称实时预览
-  ['editBrand','editMonth','editBatch'].forEach(id=>{
+  // 名称实时预览（品牌为可输入框，用 input 事件）
+  document.getElementById('editBrand').addEventListener('input', updateNamePreview);
+  ['editMonth','editBatch'].forEach(id=>{
     document.getElementById(id).addEventListener('change', updateNamePreview);
   });
 }
