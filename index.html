@@ -13970,11 +13970,14 @@ function initTaskEditModal() {
 
 // ===== 初始化 =====
 async function init() {
-  // 先尝试加载飞书数据
-  const feishuOk = await loadFeishuData();
+  // 先尝试飞书免登（拿到登录态后才能拉到真实数据）
+  const loggedIn = await feishuLogin();
 
-  // 如果飞书数据为空，用本地模拟数据
-  if (!feishuOk || DATA.tasks.length === 0) {
+  // 再加载飞书数据
+  let feishuOk = await loadFeishuData();
+
+  // 只有完全连不上飞书时才进入演示模式；连上但表为空时显示真实空数据
+  if (!feishuOk) {
     initSchedules();
     try {
       initDemoPlanData();
@@ -13983,8 +13986,9 @@ async function init() {
     }
   }
 
-  // 尝试飞书免登
-  const loggedIn = await feishuLogin();
+  // 演示身份切换只在演示模式显示
+  const demoSwitch = document.getElementById('demoRoleSwitch');
+  if (demoSwitch) demoSwitch.style.display = feishuOk ? 'none' : '';
 
   // 设置用户信息
   const avatarText = currentUser.avatar ? '' : (currentUser.name[0] || '管');
@@ -14031,18 +14035,21 @@ async function init() {
     document.getElementById('app').style.display = 'block';
   }, 400);
 
-  // 绑定身份切换按钮（演示用）
-  document.querySelectorAll('.role-switch-btn').forEach(btn=>{
-    btn.addEventListener('click',()=>{
-      if(btn.dataset.role==='admin'){
-        switchDemoRole('admin');
-      } else {
-        switchDemoRole('employee', btn.dataset.person);
-      }
+  // 绑定身份切换按钮（仅演示模式）
+  if (!feishuOk) {
+    document.querySelectorAll('.role-switch-btn').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        if(btn.dataset.role==='admin'){
+          switchDemoRole('admin');
+        } else {
+          switchDemoRole('employee', btn.dataset.person);
+        }
+      });
     });
-  });
-  // 默认管理员
-  document.querySelector('.role-switch-btn[data-role="admin"]').classList.add('active');
+    // 默认管理员
+    const adminBtn = document.querySelector('.role-switch-btn[data-role="admin"]');
+    if (adminBtn) adminBtn.classList.add('active');
+  }
 }
 
 init();
