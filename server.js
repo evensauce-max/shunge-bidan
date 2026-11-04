@@ -237,6 +237,49 @@ app.get('/api/user/me', authMiddleware, async (req, res) => {
   }
 });
 
+// 写回飞书 openId 到人员表
+app.put('/api/user/me', authMiddleware, async (req, res) => {
+  const { personId, feishuOpenId } = req.body;
+  if (!personId || !feishuOpenId) {
+    return res.status(400).json({ error: '缺少 personId 或 feishuOpenId' });
+  }
+
+  try {
+    const token = await getTenantToken();
+    const personTable = process.env.FEISHU_TABLE_PERSONS;
+
+    // 按 person_id 查找记录
+    const searchRes = await axios.post(
+      `${FEISHU_BASE}/bitable/v1/apps/${BASE_APP_TOKEN}/tables/${personTable}/records/search`,
+      {
+        page_size: 1,
+        filter: {
+          conjunction: 'and',
+          conditions: [{ field_name: 'person_id', operator: 'is', value: [personId] }]
+        }
+      },
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+
+    const items = searchRes.data.data?.items || [];
+    if (items.length === 0) {
+      return res.status(404).json({ error: '人员记录不存在' });
+    }
+
+    const recordId = items[0].record_id;
+    await axios.put(
+      `${FEISHU_BASE}/bitable/v1/apps/${BASE_APP_TOKEN}/tables/${personTable}/records/${recordId}`,
+      { fields: { feishu_open_id: feishuOpenId } },
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('写回 openId 错误:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ===== 核心业务接口：获取全部数据 =====
 app.get('/api/data/all', authMiddleware, async (req, res) => {
   try {

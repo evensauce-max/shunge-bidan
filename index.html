@@ -11844,7 +11844,7 @@ function setupCurrentUser(user) {
   let roles = user.roles || [];
   let isAdminUser = user.isAdmin === true;
 
-  // 如果后端没返回 personId，从 DATA.persons 里按 openId 找
+  // 1. 按 openId 匹配
   if (!personId && user.openId) {
     const p = DATA.persons.find(pp => pp.feishuOpenId === user.openId);
     if (p) {
@@ -11852,6 +11852,26 @@ function setupCurrentUser(user) {
       roles = p.roles || [];
       isAdminUser = roles.includes('管理员');
     }
+  }
+
+  // 2. 按名字匹配（fallback）
+  if (!personId && user.name) {
+    const p = DATA.persons.find(pp => pp.name === user.name);
+    if (p) {
+      personId = p.id;
+      roles = p.roles || [];
+      isAdminUser = roles.includes('管理员');
+      // 匹配成功后，把 openId 写回飞书多维表格，下次直接用 openId 匹配
+      if (user.openId && !p.feishuOpenId) {
+        saveFeishuOpenId(p, user.openId);
+      }
+    }
+  }
+
+  if (personId) {
+    console.log('[飞书] 身份匹配成功:', user.name, '→', roles.join(','));
+  } else {
+    console.warn('[飞书] 身份未匹配:', user.name, '（人员表中没有同名记录）');
   }
 
   currentUser = {
@@ -11864,6 +11884,23 @@ function setupCurrentUser(user) {
   };
   isAdmin = isAdminUser;
   viewPersonId = isAdminUser ? null : personId;
+}
+
+// 把飞书 openId 写回人员表（匹配成功后自动绑定）
+async function saveFeishuOpenId(person, openId) {
+  try {
+    // 先在本地更新
+    person.feishuOpenId = openId;
+    // 调用后端 API 写入飞书多维表格
+    const res = await fetch('/api/user/me', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ personId: person.id, feishuOpenId: openId }),
+    });
+    if (!res.ok) console.warn('[飞书] openId 写回失败');
+  } catch (err) {
+    console.warn('[飞书] openId 写回失败:', err.message);
+  }
 }
 
 // ===== 身份切换（演示用）=====
