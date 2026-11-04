@@ -12117,65 +12117,8 @@ function openPersonDetail(personId) {
   modal.addEventListener('click', e => { if (e.target === modal) close(); });
 }
 
-// ===== 调试浮层（登录排查用，页面右下角点"调试"展开）=====
-function dbgAppend(text, type) {
-  const body = document.getElementById('dbgBody');
-  if (!body) return;
-  const line = document.createElement('div');
-  line.className = type || 'info';
-  const t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-  line.textContent = '[' + t + '] ' + text;
-  body.appendChild(line);
-  body.scrollTop = body.scrollHeight;
-}
-
-function dbgLog(msg, type) {
-  try {
-    let panel = document.getElementById('dbgPanel');
-    if (!panel) {
-      const style = document.createElement('style');
-      style.textContent = [
-        '#dbgFab{position:fixed;left:10px;bottom:78px;z-index:99998;background:rgba(28,28,30,.78);color:#fff;font-size:12px;padding:6px 10px;border-radius:9px;cursor:pointer;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 4px 14px rgba(0,0,0,.18);}',
-        '#dbgPanel{position:fixed;left:8px;right:8px;bottom:8px;max-height:48vh;z-index:99999;background:rgba(28,28,30,.94);color:#e5e5ea;border-radius:14px;padding:10px 12px;font:11px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:auto;display:none;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);box-shadow:0 8px 30px rgba(0,0,0,.28);}',
-        '#dbgPanel.show{display:block;}',
-        '.dbg-head{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:600;margin-bottom:6px;color:#fff;}',
-        '.dbg-close{color:#0A84FF;font-weight:400;cursor:pointer;}',
-        '.dbg-body .info{color:#8E8E93;}',
-        '.dbg-body .ok{color:#30D158;}',
-        '.dbg-body .warn{color:#FFD60A;}',
-        '.dbg-body .err{color:#FF453A;}'
-      ].join('');
-      document.head.appendChild(style);
-
-      const fab = document.createElement('div');
-      fab.id = 'dbgFab';
-      fab.textContent = '调试';
-      fab.addEventListener('click', () => document.getElementById('dbgPanel').classList.toggle('show'));
-      document.body.appendChild(fab);
-
-      panel = document.createElement('div');
-      panel.id = 'dbgPanel';
-      panel.innerHTML = '<div class="dbg-head"><span>登录调试</span><span class="dbg-close">收起</span></div><div id="dbgBody" class="dbg-body"></div>';
-      document.body.appendChild(panel);
-      panel.querySelector('.dbg-close').addEventListener('click', () => panel.classList.remove('show'));
-
-      // 把 console 里飞书相关的日志同步到浮层
-      ['log', 'warn', 'error'].forEach(level => {
-        const orig = console[level].bind(console);
-        console[level] = (...args) => {
-          orig(...args);
-          const text = args.map(a => typeof a === 'string' ? a : (a && a.message) ? a.message : JSON.stringify(a)).join(' ');
-          if (text.indexOf('[飞书]') > -1 || text.indexOf('[DBG]') > -1) {
-            dbgAppend(text, level === 'error' ? 'err' : level === 'warn' ? 'warn' : 'info');
-          }
-        };
-      });
-    }
-    dbgAppend('[DBG] ' + msg, type || 'info');
-  } catch (e) {
-    // 调试浮层异常不影响主流程
-  }
-}
+// 调试日志已下线：保留空实现以免免登流程中的调用报错
+function dbgLog() {}
 
 // 通过飞书 JSAPI 获取免登临时授权码（h5sdk.ready → tt.requestAuthCode）
 function getFeishuAuthCode() {
