@@ -176,9 +176,9 @@ app.get('/api/auth/feishu', async (req, res) => {
       return res.json({ user });
     }
 
-    const { access_token, user_id, name, avatar_url } = loginRes.data.data;
+    const { open_id, user_id, name, avatar_url } = loginRes.data.data;
     const user = {
-      openId: user_id,
+      openId: open_id || user_id,
       name: name || '用户',
       avatar: avatar_url || '',
     };
