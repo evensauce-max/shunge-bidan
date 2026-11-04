@@ -1,0 +1,17 @@
+{
+  "name": "shunge-video-production",
+  "version": "1.0.0",
+  "description": "瞬格视频制作管理系统 - 飞书H5应用",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "cookie-parser": "^1.4.6",
+    "jsonwebtoken": "^9.0.2"
+  }
+}

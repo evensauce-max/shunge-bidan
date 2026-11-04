@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: shunge-bidan
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: node server.js
+    envVars:
+      - key: FEISHU_APP_ID
+        value: cli_aa68fc941178dc02
+      - key: FEISHU_APP_SECRET
+        sync: false
+      - key: FEISHU_BASE_APP_TOKEN
+        value: G14AbqOaDa9c8PsyhTWcT2E0nSb
+      - key: FEISHU_TABLE_PERSONS
+        value: tblUIFBtOrzlYTZZ
+      - key: FEISHU_TABLE_TASKS
+        value: tblAqTBdqA6quQvt
+      - key: FEISHU_TABLE_LEDGER
+        value: tblresyhlF0IQpBp
+      - key: FEISHU_TABLE_ASSET_PLAN
+        value: tblhritGjTSkzCZn
+      - key: FEISHU_TABLE_SCHEDULES
+        value: tblQnmGnorjc3gFG
+      - key: JWT_SECRET
+        sync: false
+      - key: PORT
+        value: "8000"
