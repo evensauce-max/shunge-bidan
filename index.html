@@ -6,6 +6,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>瞬格商单系统</title>
+<!-- 飞书 JSAPI SDK（用于免登获取 code） -->
+<script src="https://lf1-cdn-tos.bytescm.com/obj/gms/feishu-js-sdk/1.0.0/feishu-js-sdk.js"></script>
 <style>
   /* ===== 设计令牌（Apple Style） ===== */
   :root {
@@ -11804,7 +11806,7 @@ function openPersonDetail(personId) {
 
 // ===== 飞书 H5 免登 =====
 async function feishuLogin() {
-  // 从 URL 获取 code（飞书 H5 跳转时会带 code 参数）
+  // 1. 从 URL 获取 code（飞书 OAuth 跳转时会带 code 参数）
   const params = new URLSearchParams(window.location.search);
   const code = params.get('code');
 
@@ -11814,7 +11816,6 @@ async function feishuLogin() {
       const data = await res.json();
       if (data.user) {
         setupCurrentUser(data.user);
-        // 清掉 URL 里的 code
         window.history.replaceState({}, '', window.location.pathname);
         return true;
       }
@@ -11823,7 +11824,37 @@ async function feishuLogin() {
     }
   }
 
-  // 尝试检查已有登录态
+  // 2. 用 JSAPI 主动获取 code（飞书客户端内免登）
+  if (typeof tt !== 'undefined' && tt.requestAuthCode) {
+    console.log('[飞书] 尝试 JSAPI 免登...');
+    try {
+      const jsCode = await new Promise((resolve, reject) => {
+        tt.requestAuthCode({
+          appId: 'cli_aa68fc941178dc02',
+          scopes: ['contact:user.base:readonly'],
+          success: (res) => resolve(res.code),
+          fail: (err) => reject(err),
+        });
+      });
+      if (jsCode) {
+        const res = await fetch(`/api/auth/feishu?code=${jsCode}`);
+        const data = await res.json();
+        if (data.user) {
+          console.log('[飞书] JSAPI 免登成功');
+          setupCurrentUser(data.user);
+          return true;
+        } else {
+          console.warn('[飞书] JSAPI 免登失败:', data.error);
+        }
+      }
+    } catch (err) {
+      console.warn('[飞书] JSAPI 免登失败:', err);
+    }
+  } else {
+    console.log('[飞书] tt 对象不可用，跳过 JSAPI 免登');
+  }
+
+  // 3. 检查已有登录态（cookie）
   try {
     const res = await fetch('/api/user/me');
     const data = await res.json();
