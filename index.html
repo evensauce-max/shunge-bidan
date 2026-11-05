@@ -6837,9 +6837,9 @@ async function loadFeishuData() {
         assetPlan[vi].asset[type] = {
           plan: a.planQty || 0,
           qty: a.planQty || 0,
-          made: a.made || 0,
-          modified: a.modified || 0,
-          delivered: a.delivered || 0,
+          made: Number(a.made) || 0,
+          modified: Number(a.modified) || 0,
+          delivered: Number(a.delivered) || 0,
           date: a.planDate || '',
           editDate: a.editDate || '',
           note: a.note || '',
@@ -10084,7 +10084,7 @@ function renderDaily() {
   const person = viewPersonId ? getPerson(viewPersonId) : null;
   document.getElementById('dailyDesc').textContent = person
     ? `${person.name} 的每日产出${getRoleUnitDesc(person.role)}`
-    : '全员每日产出总览（以视频成片为统计口径）';
+    : '全员每日产出总览（全部角色合计）';
 
   // 全部保存按钮已隐藏
   document.getElementById('saveAllBtn').style.display = 'none';
@@ -10092,14 +10092,8 @@ function renderDaily() {
   let sch = DATA.schedules.filter(s=>s.date===ds);
   if(person) sch = sch.filter(s=>s.personId===person.id);
 
-  // 管理员视角下，顶部统计以AI制作师口径为准（反映当日实际视频产出）
+  // 管理员视角：统计所有角色（编导+AI制作师+资产设计师）
   let statSch = sch;
-  if (isAdmin && !person) {
-    statSch = sch.filter(s => {
-      const p = getPerson(s.personId);
-      return p && hasRole(p.id, 'AI制作师');
-    });
-  }
   // 顶部统计数字的单位：员工视角用对应角色单位，管理员视角用"条"
   const unit = person ? getRoleUnit(getPrimaryRole(person)) : '条';
   // 顶部统计：任务数用"个"，其他用角色对应的单位
@@ -10109,20 +10103,23 @@ function renderDaily() {
   const planRole = isAdmin && !person ? 'ai' : (person ? (getPrimaryRole(person) === '编导' ? 'director' : getPrimaryRole(person) === 'AI制作师' ? 'ai' : 'asset') : 'ai');
   // 任务ID列表：资产设计师视角额外从 assetPlan 收集（因为资产产出不在 schedules 里）
   let taskIds = [...new Set(sch.map(s => s.taskId))];
-  if (planRole === 'asset' && person) {
+  const includeAssetTasks = (isAdmin && !person) || (planRole === 'asset' && person);
+  if (includeAssetTasks) {
     DATA.tasks.forEach(t => {
       if (!t.assetPlan) return;
-      // 必须是这个资产设计师负责的任务
-      const assetIds = getTaskPersonIds(t.assetDesigner);
-      if (!assetIds.includes(person.id)) return;
+      if (planRole === 'asset' && person) {
+        // 员工视角：必须是这个资产设计师负责的任务
+        const assetIds = getTaskPersonIds(t.assetDesigner);
+        if (!assetIds.includes(person.id)) return;
+      }
       let hasToday = false;
       Object.values(t.assetPlan).forEach(vp => {
         if (!vp || !vp.asset) return;
         ['char', 'scene', 'sb', 'other'].forEach(type => {
           const a = vp.asset[type];
           if (!a) return;
-          // 当天有排产或有产出就算
-          if (a.date === ds || (a.editDate === ds && a.personId === person.id)) {
+          // 当天有排产或有产出就算（员工视角只看自己的产出）
+          if (a.date === ds || (a.editDate === ds && (!person || a.personId === person.id))) {
             hasToday = true;
           }
         });
@@ -10130,11 +10127,23 @@ function renderDaily() {
       if (hasToday && !taskIds.includes(t.id)) taskIds.push(t.id);
     });
   }
-  // 任务数：资产设计师用 taskIds 数量，其他用 schedules 记录数
-  document.getElementById('dsTasks').textContent = planRole === 'asset' ? taskIds.length : statSch.length;
+  // 任务数：管理员/资产视角用任务去重数，其他用 schedules 记录数
+  document.getElementById('dsTasks').textContent = ((isAdmin && !person) || planRole === 'asset') ? taskIds.length : statSch.length;
   taskIds.forEach(tid => {
     const t = getTask(tid);
     if (!t) return;
+    if (isAdmin && !person) {
+      // 管理员：编导计划 + AI计划 + 资产计划全口径
+      if (t.directorPlan) for (let vi = 1; vi <= t.totalVideos; vi++) { if (t.directorPlan[vi] === ds) totalPlan++; }
+      if (t.aiPlan) for (let vi = 1; vi <= t.totalVideos; vi++) { if (t.aiPlan[vi] === ds) totalPlan++; }
+      if (t.assetPlan) {
+        for (let vi = 1; vi <= t.totalVideos; vi++) {
+          const a = t.assetPlan[vi] && t.assetPlan[vi].asset;
+          if (a) Object.values(a).forEach(v => { if (v && v.date === ds) totalPlan += v.plan !== undefined ? v.plan : (v.qty || 0); });
+        }
+      }
+      return;
+    }
     if (planRole === 'director' && t.directorPlan) {
       for (let vi = 1; vi <= t.totalVideos; vi++) {
         if (t.directorPlan[vi] === ds) totalPlan++;
@@ -10159,7 +10168,27 @@ function renderDaily() {
   document.getElementById('dsPlan').textContent = totalPlan;
   // 制作/交付/修改：资产设计师从 assetPlan 按 editDate+personId 统计，其他从 schedules 统计
   let realMade = 0, realModified = 0, realDelivered = 0;
-  if (planRole === 'asset') {
+  if (isAdmin && !person) {
+    // 管理员：schedules 全角色产出 + 资产产出（按 editDate）
+    realMade = statSch.filter(s=>!s.isPlanRecord).reduce((a,s)=>a+(s.made||0),0);
+    realModified = statSch.filter(s=>!s.isPlanRecord).reduce((a,s)=>a+(s.modified||0),0);
+    realDelivered = statSch.filter(s=>!s.isPlanRecord).reduce((a,s)=>a+(s.delivered||0),0);
+    taskIds.forEach(tid => {
+      const t = getTask(tid);
+      if (!t || !t.assetPlan) return;
+      Object.values(t.assetPlan).forEach(vp => {
+        if (vp && vp.asset) {
+          Object.values(vp.asset).forEach(a => {
+            if (a && a.editDate === ds) {
+              realMade += a.made || 0;
+              realModified += a.modified || 0;
+              realDelivered += a.delivered || 0;
+            }
+          });
+        }
+      });
+    });
+  } else if (planRole === 'asset') {
     const assetPersonId = person ? person.id : null;
     taskIds.forEach(tid => {
       const t = getTask(tid);
@@ -10281,7 +10310,15 @@ function renderDaily() {
           unit = '条';
         }
         // 计划数直接从task的排产计划数据里数当天的，跟高亮用的数据源一致
-        if (roleForPlan === 'director' && task.directorPlan) {
+        if (isAdmin && !person) {
+          // 管理员：编导+AI+资产全口径
+          if (task.directorPlan) for (let vi = 1; vi <= task.totalVideos; vi++) { if (task.directorPlan[vi] === ds) planned++; }
+          if (task.aiPlan) for (let vi = 1; vi <= task.totalVideos; vi++) { if (task.aiPlan[vi] === ds) planned++; }
+          if (task.assetPlan) for (let vi = 1; vi <= task.totalVideos; vi++) {
+            const a = task.assetPlan[vi] && task.assetPlan[vi].asset;
+            if (a) Object.values(a).forEach(v => { if (v && v.date === ds) planned += v.plan !== undefined ? v.plan : (v.qty || 0); });
+          }
+        } else if (roleForPlan === 'director' && task.directorPlan) {
           for (let vi = 1; vi <= task.totalVideos; vi++) {
             if (task.directorPlan[vi] === ds) planned++;
           }
@@ -10304,7 +10341,23 @@ function renderDaily() {
         }
         // 实际产出：资产设计师从 assetPlan 按 editDate+personId 统计，其他角色从 schedules 统计
         let made = 0, modified = 0, delivered = 0;
-        if (roleForPlan === 'asset' && task.assetPlan) {
+        if (isAdmin && !person) {
+          // 管理员：所有角色 schedules 产出 + 资产产出（按 editDate）
+          const realScs = scs.filter(s => !s.isPlanRecord);
+          made = realScs.reduce((a,s)=>a+(s.made||0),0);
+          modified = realScs.reduce((a,s)=>a+(s.modified||0),0);
+          delivered = realScs.reduce((a,s)=>a+(s.delivered||0),0);
+          if (task.assetPlan) for (let vi = 1; vi <= task.totalVideos; vi++) {
+            const a = task.assetPlan[vi] && task.assetPlan[vi].asset;
+            if (a) Object.values(a).forEach(v => {
+              if (v && v.editDate === ds) {
+                made += v.made || 0;
+                modified += v.modified || 0;
+                delivered += v.delivered || 0;
+              }
+            });
+          }
+        } else if (roleForPlan === 'asset' && task.assetPlan) {
           const assetPersonId = person ? person.id : null;
           for (let vi = 1; vi <= task.totalVideos; vi++) {
             const a = task.assetPlan[vi] && task.assetPlan[vi].asset;
