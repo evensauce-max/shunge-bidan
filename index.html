@@ -3737,13 +3737,6 @@
     font-size: 11px;
     line-height: 1.6;
   }
-  .asset-row-hist {
-    color: var(--text-tertiary);
-  }
-  .asset-row-hist .asset-col-num,
-  .asset-row-hist .asset-col-date {
-    color: var(--text-tertiary);
-  }
   .asset-header-row {
     color: var(--text-tertiary);
     font-weight: 500;
@@ -13107,20 +13100,23 @@ function openDetailModal(taskId, schedules) {
 }
 
 // 角色单元格三行状态：优先显示当日数据，无当日数据时显示最近一次的历史日期
-function buildRoleStatusLines(status, last, ds) {
+function buildRoleStatusLines(status, last, ds, isLocked) {
   const delivered = status.dailyDelivered || !!last.deliverDate;
   const deliverLabel = status.dailyDelivered || last.deliverDate
     ? '✓ 已交付'
     : (status.hasOutput ? '未交付' : '未编辑');
   const deliverDate = status.dailyDelivered ? ds : (last.deliverDate || '');
-  // 制作：优先显示当天，否则显示最近一次的数量+日期（灰色历史）
+  // 历史数值的样式：锁定单元格用灰色，可编辑单元格用正常颜色
+  const histValCls = isLocked ? 'line-val line-hist' : 'line-val';
+  const histDateCls = isLocked ? 'line-unedited' : '';
+  // 制作：优先显示当天，否则显示最近一次的数量+日期
   let madeVal = '', madeDate = '';
   if (status.dailyMade > 0) {
     madeVal = `<span class="line-val">${status.dailyMade}</span>`;
     madeDate = formatShortDate(ds);
   } else if (last.madeDate) {
-    madeVal = `<span class="line-val line-hist">${last.madeVal}</span>`;
-    madeDate = `<span class="line-unedited">${formatShortDate(last.madeDate)}</span>`;
+    madeVal = `<span class="${histValCls}">${last.madeVal}</span>`;
+    madeDate = histDateCls ? `<span class="${histDateCls}">${formatShortDate(last.madeDate)}</span>` : formatShortDate(last.madeDate);
   } else {
     madeDate = '<span class="line-unedited">未编辑</span>';
   }
@@ -13129,17 +13125,20 @@ function buildRoleStatusLines(status, last, ds) {
     modVal = `<span class="line-val">${status.dailyModified}</span>`;
     modDate = formatShortDate(ds);
   } else if (last.modifiedDate) {
-    modVal = `<span class="line-val line-hist">${last.modifiedVal}</span>`;
-    modDate = `<span class="line-unedited">${formatShortDate(last.modifiedDate)}</span>`;
+    modVal = `<span class="${histValCls}">${last.modifiedVal}</span>`;
+    modDate = histDateCls ? `<span class="${histDateCls}">${formatShortDate(last.modifiedDate)}</span>` : formatShortDate(last.modifiedDate);
   } else {
     modDate = '<span class="line-unedited">未编辑</span>';
   }
   const deliverIsHist = !status.dailyDelivered && !!last.deliverDate;
+  const deliverDateHtml = deliverDate
+    ? (deliverIsHist && histDateCls ? `<span class="${histDateCls}">${formatShortDate(deliverDate)}</span>` : formatShortDate(deliverDate))
+    : '';
   return `
     <div class="role-cell-lines">
       <div class="role-cell-line">
         <span class="line-left ${delivered ? 'line-delivered' : 'line-not-delivered'}">${deliverLabel}</span>
-        <span class="line-date">${deliverDate ? (deliverIsHist ? `<span class="line-unedited">${formatShortDate(deliverDate)}</span>` : formatShortDate(deliverDate)) : ''}</span>
+        <span class="line-date">${deliverDateHtml}</span>
       </div>
       <div class="role-cell-line">
         <span class="line-left">制作${madeVal}</span>
@@ -13491,7 +13490,7 @@ function openDailyTaskDetail(taskId) {
     const dirCell = `
       <div class="role-cell-content ${dirCanEdit ? 'editable' : ''} ${dirDeliverLocked ? 'deliver-locked' : ''}" data-role="director" data-video="${i}">
         ${dirHasData ? `
-          ${buildRoleStatusLines(dirStatus, dirLast, ds)}
+          ${buildRoleStatusLines(dirStatus, dirLast, ds, dirDeliverLocked)}
           ${dirDeliverLocked ? `
             <div class="deliver-lock-hint">已于 ${formatShortDate(dirLast.deliverDate)} 交付，回到当日可修改</div>
           ` : (dirCanEdit ? `
@@ -13516,7 +13515,7 @@ function openDailyTaskDetail(taskId) {
     const aiCell = `
       <div class="role-cell-content ${aiCanEdit ? 'editable' : ''} ${aiDeliverLocked ? 'deliver-locked' : ''}" data-role="ai" data-video="${i}">
         ${aiHasData ? `
-          ${buildRoleStatusLines(aiStatus, aiLast, ds)}
+          ${buildRoleStatusLines(aiStatus, aiLast, ds, aiDeliverLocked)}
           ${aiDeliverLocked ? `
             <div class="deliver-lock-hint">已于 ${formatShortDate(aiLast.deliverDate)} 交付，回到当日可修改</div>
           ` : (aiCanEdit ? `
@@ -13543,9 +13542,8 @@ function openDailyTaskDetail(taskId) {
       let rowsHtml = '';
       assetList.forEach(a => {
         const dateText = a.editDate ? formatShortDate(a.editDate) : '未编辑';
-        const histCls = a.isHist ? ' asset-row-hist' : '';
         rowsHtml += `
-          <div class="asset-row${histCls}">
+          <div class="asset-row">
             <span class="asset-col asset-col-label">${a.label}</span>
             <span class="asset-col asset-col-date ${a.editDate ? 'has-date' : ''}">${dateText}${a.isHist ? '（历史）' : ''}</span>
             <span class="asset-col asset-col-num">${a.plan}</span>
