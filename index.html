@@ -12197,7 +12197,7 @@ async function feishuLogin() {
       const data = await res.json();
       dbgLog('后端返回: ' + JSON.stringify(data), data.user ? 'ok' : 'warn');
       if (data.user) {
-        setupCurrentUser(data.user);
+        window.__pendingFeishuUser = data.user; // 延迟到数据加载完再匹配身份
         window.history.replaceState({}, '', window.location.pathname);
         return true;
       }
@@ -12220,7 +12220,7 @@ async function feishuLogin() {
         const data = await res.json();
         dbgLog('后端返回: ' + JSON.stringify(data), data.user ? 'ok' : 'warn');
         if (data.user) {
-          setupCurrentUser(data.user);
+          window.__pendingFeishuUser = data.user; // 延迟到数据加载完再匹配身份
           return true;
         }
       }
@@ -12237,7 +12237,7 @@ async function feishuLogin() {
     const data = await res.json();
     if (data.user) {
       dbgLog('已有登录态: ' + (data.user.name || ''), 'ok');
-      setupCurrentUser(data.user);
+      window.__pendingFeishuUser = data.user; // 延迟到数据加载完再匹配身份
       return true;
     }
     dbgLog('没有已有登录态');
@@ -13983,6 +13983,12 @@ async function init() {
 
   // 再加载飞书数据
   let feishuOk = await loadFeishuData();
+
+  // 数据就绪后再匹配身份（人员表此时才可用）
+  if (window.__pendingFeishuUser) {
+    setupCurrentUser(window.__pendingFeishuUser);
+    window.__pendingFeishuUser = null;
+  }
 
   // 只有完全连不上飞书时才进入演示模式；连上但表为空时显示真实空数据
   if (!feishuOk) {
