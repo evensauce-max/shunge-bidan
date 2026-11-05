@@ -6923,6 +6923,9 @@ async function loadFeishuData() {
       if (!DATA.brands.includes('其他品牌')) DATA.brands.push('其他品牌');
     }
 
+    // 6. 重建每条视频的排产日期（飞书无此字段，需从排产计划记录反推）
+    rebuildPlanMaps();
+
     feishuDataLoaded = true;
     console.log('[飞书] 数据加载成功:', DATA.persons.length + '人', DATA.tasks.length + '商单', DATA.schedules.length + '条排产');
     return true;
@@ -7065,6 +7068,80 @@ function persistScheduleRecord(rec) {
   }
 }
 
+// 从排产计划记录（isPlanRecord/planned>0）反推每条视频的排产日期
+// 飞书加载的数据没有 directorPlan / aiPlan 字段，必须在数据加载后重建，
+// 否则每日汇总「计划数」恒为 0、汇总弹窗无法高亮当日排产行
+function rebuildPlanMaps() {
+  DATA.tasks.forEach(t => {
+    if (!t.directorPlan) {
+      t.directorPlan = {};
+      const personIds = getTaskPersonIds(t.director);
+      if (personIds.length > 0) {
+        // 按人员收集排产计划，按日期排序，按顺序分配给每条视频
+        const personPlan = {};
+        personIds.forEach(pid => {
+          personPlan[pid] = DATA.schedules.filter(s =>
+            s.taskId === t.id && s.personId === pid && s.role === '编导' && (s.planned || 0) > 0
+          ).sort((a, b) => a.date.localeCompare(b.date));
+        });
+        // 每条视频按轮询分配，依次取对应人员的排产日期
+        const personCounters = {};
+        personIds.forEach(pid => personCounters[pid] = 0);
+        for (let vi = 1; vi <= t.totalVideos; vi++) {
+          const pIdx = (vi - 1) % personIds.length;
+          const pid = personIds[pIdx];
+          const recs = personPlan[pid] || [];
+          let count = 0;
+          let found = '';
+          for (const rec of recs) {
+            count += rec.planned || 0;
+            if (count > personCounters[pid]) {
+              found = rec.date;
+              break;
+            }
+          }
+          if (found) {
+            t.directorPlan[vi] = found;
+            personCounters[pid]++;
+          }
+        }
+      }
+    }
+    if (!t.aiPlan) {
+      t.aiPlan = {};
+      const personIds = getTaskPersonIds(t.aiMaker);
+      if (personIds.length > 0) {
+        const personPlan = {};
+        personIds.forEach(pid => {
+          personPlan[pid] = DATA.schedules.filter(s =>
+            s.taskId === t.id && s.personId === pid && s.role === 'AI制作师' && (s.planned || 0) > 0
+          ).sort((a, b) => a.date.localeCompare(b.date));
+        });
+        const personCounters = {};
+        personIds.forEach(pid => personCounters[pid] = 0);
+        for (let vi = 1; vi <= t.totalVideos; vi++) {
+          const pIdx = (vi - 1) % personIds.length;
+          const pid = personIds[pIdx];
+          const recs = personPlan[pid] || [];
+          let count = 0;
+          let found = '';
+          for (const rec of recs) {
+            count += rec.planned || 0;
+            if (count > personCounters[pid]) {
+              found = rec.date;
+              break;
+            }
+          }
+          if (found) {
+            t.aiPlan[vi] = found;
+            personCounters[pid]++;
+          }
+        }
+      }
+    }
+  });
+}
+
 function initSchedules() {
   const today = new Date();
   const td = formatDate(today);
@@ -7153,76 +7230,8 @@ function initSchedules() {
     }
   });
 
-  // 补全旧数据：每个task的directorPlan和aiPlan（从schedules的排产计划反推）
-  // 直接用planned>0的记录：新格式实际产出记录planned=0不会被算，旧格式planned就是计划数
-  DATA.tasks.forEach(t => {
-    if (!t.directorPlan) {
-      t.directorPlan = {};
-      const personIds = getTaskPersonIds(t.director);
-      if (personIds.length > 0) {
-        // 按人员收集排产计划，按日期排序，按顺序分配给每条视频
-        const personPlan = {};
-        personIds.forEach(pid => {
-          personPlan[pid] = DATA.schedules.filter(s =>
-            s.taskId === t.id && s.personId === pid && s.role === '编导' && (s.planned || 0) > 0
-          ).sort((a, b) => a.date.localeCompare(b.date));
-        });
-        // 每条视频按轮询分配，依次取对应人员的排产日期
-        const personCounters = {};
-        personIds.forEach(pid => personCounters[pid] = 0);
-        for (let vi = 1; vi <= t.totalVideos; vi++) {
-          const pIdx = (vi - 1) % personIds.length;
-          const pid = personIds[pIdx];
-          const recs = personPlan[pid] || [];
-          let count = 0;
-          let found = '';
-          for (const rec of recs) {
-            count += rec.planned || 0;
-            if (count > personCounters[pid]) {
-              found = rec.date;
-              break;
-            }
-          }
-          if (found) {
-            t.directorPlan[vi] = found;
-            personCounters[pid]++;
-          }
-        }
-      }
-    }
-    if (!t.aiPlan) {
-      t.aiPlan = {};
-      const personIds = getTaskPersonIds(t.aiMaker);
-      if (personIds.length > 0) {
-        const personPlan = {};
-        personIds.forEach(pid => {
-          personPlan[pid] = DATA.schedules.filter(s =>
-            s.taskId === t.id && s.personId === pid && s.role === 'AI制作师' && (s.planned || 0) > 0
-          ).sort((a, b) => a.date.localeCompare(b.date));
-        });
-        const personCounters = {};
-        personIds.forEach(pid => personCounters[pid] = 0);
-        for (let vi = 1; vi <= t.totalVideos; vi++) {
-          const pIdx = (vi - 1) % personIds.length;
-          const pid = personIds[pIdx];
-          const recs = personPlan[pid] || [];
-          let count = 0;
-          let found = '';
-          for (const rec of recs) {
-            count += rec.planned || 0;
-            if (count > personCounters[pid]) {
-              found = rec.date;
-              break;
-            }
-          }
-          if (found) {
-            t.aiPlan[vi] = found;
-            personCounters[pid]++;
-          }
-        }
-      }
-    }
-  });
+  // 补全每个 task 的 directorPlan 和 aiPlan（从 schedules 的排产计划反推）
+  rebuildPlanMaps();
 }
 
 // ===== 状态 =====
@@ -10136,11 +10145,20 @@ function renderDaily() {
     const t = getTask(tid);
     if (!t) return;
     if (planRole === 'director' && t.directorPlan) {
+      // 员工视角：只算轮询分给自己负责的那几条视频
+      const ids = person ? getTaskPersonIds(t.director) : [];
+      const myIdx = person ? ids.indexOf(person.id) : -1;
+      if (person && myIdx < 0) return;
       for (let vi = 1; vi <= t.totalVideos; vi++) {
+        if (person && ((vi - 1) % ids.length) !== myIdx) continue;
         if (t.directorPlan[vi] === ds) totalPlan++;
       }
     } else if (planRole === 'ai' && t.aiPlan) {
+      const ids = person ? getTaskPersonIds(t.aiMaker) : [];
+      const myIdx = person ? ids.indexOf(person.id) : -1;
+      if (person && myIdx < 0) return;
       for (let vi = 1; vi <= t.totalVideos; vi++) {
+        if (person && ((vi - 1) % ids.length) !== myIdx) continue;
         if (t.aiPlan[vi] === ds) totalPlan++;
       }
     } else if (planRole === 'asset' && t.assetPlan) {
