@@ -6946,6 +6946,7 @@ async function saveToFeishu(type, payload) {
     'schedules-batch': { method: 'POST', url: '/api/data/schedules/batch' },
     'schedules-update': { method: 'PUT', url: `/api/data/schedules/${payload.recordId}` },
     'schedules-plan-sync': { method: 'POST', url: '/api/data/schedules/sync-plan' },
+    'schedule-delete': { method: 'DELETE', url: `/api/data/schedules/${payload.recordId}` },
     'asset-plan-sync': { method: 'POST', url: '/api/data/asset-plan/sync' },
     'ledger-sync': { method: 'POST', url: '/api/data/ledger/sync' },
     'task-create': { method: 'POST', url: '/api/data/tasks' },
@@ -7020,6 +7021,7 @@ function persistScheduleRecord(rec) {
   if (rec.id) {
     const fields = {
       date: rec.date,
+      videoIndex: rec.videoIndex || 0,
       made: rec.made || 0,
       modified: rec.modified || 0,
       delivered: rec.delivered || 0,
@@ -7040,6 +7042,7 @@ function persistScheduleRecord(rec) {
   } else {
     const payload = {
       date: rec.date,
+      videoIndex: rec.videoIndex || 0,
       personId: rec.personId,
       taskId: rec.taskId,
       role: rec.role,
@@ -7616,9 +7619,23 @@ function initVideoOutputForTask(task) {
       ).sort((a, b) => a.date.localeCompare(b.date));
     });
 
-    // 对每个人，按日期顺序推算每条视频的产出
+    // 1) 带 video_index 的记录：精确还原到对应视频的对应日期
+    personIds.forEach(pid => {
+      (personRecs[pid] || []).forEach(rec => {
+        const vi = rec.videoIndex || 0;
+        if (!vi) return;
+        if (!task[outputKey][vi]) task[outputKey][vi] = {};
+        const cell = task[outputKey][vi][rec.date] || { made: 0, modified: 0, delivered: 0 };
+        cell.made += rec.made || 0;
+        cell.modified += rec.modified || 0;
+        cell.delivered += rec.delivered || 0;
+        task[outputKey][vi][rec.date] = cell;
+      });
+    });
+
+    // 2) 旧数据（无 video_index）：按累计顺序兜底分配
     personIds.forEach((pid, pIdx) => {
-      const recs = personRecs[pid] || [];
+      const recs = (personRecs[pid] || []).filter(r => !(r.videoIndex || 0));
       // 找出该人员负责的所有视频序号（按轮询分配）
       const personVideos = [];
       for (let vi = 1; vi <= task.totalVideos; vi++) {
@@ -7709,16 +7726,25 @@ function saveVideoOutput(taskId, videoIndex, role, date, personId, data) {
   old.modified = newModified;
   old.delivered = newDelivered;
 
-  // 同步更新 schedules 聚合
+  // 同步更新 schedules：一条记录对应「某条视频某天的某角色产出」
   let rec = DATA.schedules.find(s =>
     s.taskId === taskId && s.date === date && s.role === roleName
-    && s.personId === personId && !s.isPlanRecord
+    && s.personId === personId && !s.isPlanRecord && (s.videoIndex || 0) === videoIndex
   );
+  // 兼容旧数据：没有 video_index 的记录，首次编辑时认领为当前视频，避免新增重复行
+  if (!rec) {
+    rec = DATA.schedules.find(s =>
+      s.taskId === taskId && s.date === date && s.role === roleName
+      && s.personId === personId && !s.isPlanRecord && !s.videoIndex
+    );
+    if (rec) rec.videoIndex = videoIndex;
+  }
 
   // 如果差值都为0且记录不存在，不用创建
   if (!rec && (diffMade !== 0 || diffModified !== 0 || diffDelivered !== 0)) {
     rec = {
       date: date,
+      videoIndex: videoIndex,
       personId: personId,
       taskId: taskId,
       role: roleName,
@@ -7741,8 +7767,16 @@ function saveVideoOutput(taskId, videoIndex, role, date, personId, data) {
     if (rec.modified < 0) rec.modified = 0;
     if (rec.delivered < 0) rec.delivered = 0;
 
-    // 同步到飞书
-    persistScheduleRecord(rec);
+    // 清除后全为 0：删除飞书这一行，避免留下空记录
+    if (!rec.isPlanRecord && rec.made === 0 && rec.modified === 0 && rec.delivered === 0) {
+      DATA.schedules = DATA.schedules.filter(s => s !== rec);
+      if (rec.id) {
+        saveToFeishu('schedule-delete', { recordId: rec.id })
+          .catch(err => showToast('同步飞书失败：' + err.message));
+      }
+    } else {
+      persistScheduleRecord(rec);
+    }
   }
 }
 
@@ -7765,7 +7799,23 @@ function hasVideoAnyOutput(taskId, videoIndex, role) {
   return false;
 }
 
-// 将任务的人员字段统一为数组（兼容旧的字符串单值）
+// 某条视频最近一次制作 / 修改 / 交付的日期（用于在非当日视图里显示历史）
+function getVideoLastDates(taskId, videoIndex, role) {
+  const task = getTask(taskId);
+  const empty = { madeDate: '', modifiedDate: '', deliverDate: '' };
+  if (!task) return empty;
+  const outputKey = role === 'director' ? 'directorOutput' : 'aiOutput';
+  if (!task[outputKey]) initVideoOutputForTask(task);
+  const dates = (task[outputKey] && task[outputKey][videoIndex]) || {};
+  const out = { ...empty };
+  Object.keys(dates).sort().forEach(d => {
+    const v = dates[d] || {};
+    if ((v.made || 0) > 0) out.madeDate = d;
+    if ((v.modified || 0) > 0) out.modifiedDate = d;
+    if ((v.delivered || 0) > 0) out.deliverDate = d;
+  });
+  return out;
+}
 function getTaskPersonIds(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value;
@@ -13036,6 +13086,38 @@ function openDetailModal(taskId, schedules) {
   document.getElementById('detailModal').classList.add('active');
 }
 
+// 角色单元格三行状态：优先显示当日数据，无当日数据时显示最近一次的历史日期
+function buildRoleStatusLines(status, last, ds) {
+  const delivered = status.dailyDelivered || !!last.deliverDate;
+  const deliverLabel = status.dailyDelivered || last.deliverDate
+    ? '✓ 已交付'
+    : (status.hasOutput ? '未交付' : '未编辑');
+  const deliverDate = status.dailyDelivered ? ds : (last.deliverDate || '');
+  const madeVal = status.dailyMade > 0 ? `<span class="line-val">${status.dailyMade}</span>` : '';
+  const madeDate = status.dailyMade > 0
+    ? formatShortDate(ds)
+    : (last.madeDate ? `<span class="line-unedited">上次 ${formatShortDate(last.madeDate)}</span>` : '<span class="line-unedited">未编辑</span>');
+  const modVal = status.dailyModified > 0 ? `<span class="line-val">${status.dailyModified}</span>` : '';
+  const modDate = status.dailyModified > 0
+    ? formatShortDate(ds)
+    : (last.modifiedDate ? `<span class="line-unedited">上次 ${formatShortDate(last.modifiedDate)}</span>` : '<span class="line-unedited">未编辑</span>');
+  return `
+    <div class="role-cell-lines">
+      <div class="role-cell-line">
+        <span class="line-left ${delivered ? 'line-delivered' : 'line-not-delivered'}">${deliverLabel}</span>
+        <span class="line-date">${deliverDate ? formatShortDate(deliverDate) : ''}</span>
+      </div>
+      <div class="role-cell-line">
+        <span class="line-left">制作${madeVal}</span>
+        <span class="line-date">${madeDate}</span>
+      </div>
+      <div class="role-cell-line">
+        <span class="line-left">修改${modVal}</span>
+        <span class="line-date">${modDate}</span>
+      </div>
+    </div>`;
+}
+
 // 打开每日汇总的任务详情弹窗
 function openDailyTaskDetail(taskId) {
   const task = getTask(taskId);
@@ -13303,6 +13385,8 @@ function openDailyTaskDetail(taskId) {
       dailyDelivered: !!(aiOutput.delivered),
       hasOutput: aiHasOutput
     };
+    const dirLast = getVideoLastDates(task.id, i, 'director');
+    const aiLast = getVideoLastDates(task.id, i, 'ai');
 
     // 资产数据（从assetPlan取每种资产类型，按当日+personId筛选）
     // 计划按排产日期date，产出按编辑日期editDate
@@ -13357,26 +13441,12 @@ function openDailyTaskDetail(taskId) {
 
     // 编导单元格
     const dirCanEdit = canEditRole('director');
-    const dirHasData = dirStatus.dailyMade > 0 || dirStatus.dailyModified > 0 || dirStatus.dailyDelivered;
+    const dirHasData = dirStatus.dailyMade > 0 || dirStatus.dailyModified > 0 || dirStatus.dailyDelivered
+      || !!dirLast.madeDate || !!dirLast.deliverDate || !!dirLast.modifiedDate;
     const dirCell = `
       <div class="role-cell-content ${dirCanEdit ? 'editable' : ''}" data-role="director" data-video="${i}">
         ${dirHasData ? `
-          <div class="role-cell-lines">
-            <div class="role-cell-line">
-              <span class="line-left ${dirStatus.dailyDelivered ? 'line-delivered' : 'line-not-delivered'}">
-                ${dirStatus.dailyDelivered ? '✓ 已交付' : (dirStatus.hasOutput ? '未交付' : '未编辑')}
-              </span>
-              <span class="line-date">${dirStatus.dailyDelivered ? formatShortDate(ds) : ''}</span>
-            </div>
-            <div class="role-cell-line">
-              <span class="line-left">制作${dirStatus.dailyMade > 0 ? '<span class="line-val">' + dirStatus.dailyMade + '</span>' : ''}</span>
-              <span class="line-date">${dirStatus.dailyMade > 0 ? formatShortDate(ds) : '<span class="line-unedited">未编辑</span>'}</span>
-            </div>
-            <div class="role-cell-line">
-              <span class="line-left">修改${dirStatus.dailyModified > 0 ? '<span class="line-val">' + dirStatus.dailyModified + '</span>' : ''}</span>
-              <span class="line-date">${dirStatus.dailyModified > 0 ? formatShortDate(ds) : '<span class="line-unedited">未编辑</span>'}</span>
-            </div>
-          </div>
+          ${buildRoleStatusLines(dirStatus, dirLast, ds)}
           ${dirCanEdit ? `
             <div class="role-cell-actions">
               <span class="cell-edit-btn" data-action="edit">修改</span>
@@ -13393,26 +13463,12 @@ function openDailyTaskDetail(taskId) {
 
     // AI制作师单元格
     const aiCanEdit = canEditRole('ai');
-    const aiHasData = aiStatus.dailyMade > 0 || aiStatus.dailyModified > 0 || aiStatus.dailyDelivered;
+    const aiHasData = aiStatus.dailyMade > 0 || aiStatus.dailyModified > 0 || aiStatus.dailyDelivered
+      || !!aiLast.madeDate || !!aiLast.deliverDate || !!aiLast.modifiedDate;
     const aiCell = `
       <div class="role-cell-content ${aiCanEdit ? 'editable' : ''}" data-role="ai" data-video="${i}">
         ${aiHasData ? `
-          <div class="role-cell-lines">
-            <div class="role-cell-line">
-              <span class="line-left ${aiStatus.dailyDelivered ? 'line-delivered' : 'line-not-delivered'}">
-                ${aiStatus.dailyDelivered ? '✓ 已交付' : (aiStatus.hasOutput ? '未交付' : '未编辑')}
-              </span>
-              <span class="line-date">${aiStatus.dailyDelivered ? formatShortDate(ds) : ''}</span>
-            </div>
-            <div class="role-cell-line">
-              <span class="line-left">制作${aiStatus.dailyMade > 0 ? '<span class="line-val">' + aiStatus.dailyMade + '</span>' : ''}</span>
-              <span class="line-date">${aiStatus.dailyMade > 0 ? formatShortDate(ds) : '<span class="line-unedited">未编辑</span>'}</span>
-            </div>
-            <div class="role-cell-line">
-              <span class="line-left">修改${aiStatus.dailyModified > 0 ? '<span class="line-val">' + aiStatus.dailyModified + '</span>' : ''}</span>
-              <span class="line-date">${aiStatus.dailyModified > 0 ? formatShortDate(ds) : '<span class="line-unedited">未编辑</span>'}</span>
-            </div>
-          </div>
+          ${buildRoleStatusLines(aiStatus, aiLast, ds)}
           ${aiCanEdit ? `
             <div class="role-cell-actions">
               <span class="cell-edit-btn" data-action="edit">修改</span>
@@ -13528,16 +13584,14 @@ function openDailyTaskDetail(taskId) {
       const role = cell.dataset.role;
       const videoIndex = parseInt(cell.dataset.video);
       const ds = formatDate(selectedDate);
-      // 确定 personId
-      let personId = null;
+      // 员工只清自己的；管理员清掉该视频当天所有归属人的产出记录
       if (currentUser && currentUser.id && !isAdmin) {
-        personId = currentUser.id;
+        clearVideoOutput(task.id, videoIndex, role, ds, currentUser.id);
       } else {
-        const personIds = role === 'director' ? getTaskPersonIds(task.director)
-          : getTaskPersonIds(task.aiMaker);
-        personId = personIds[0] || null;
+        const personIds = (role === 'director' ? getTaskPersonIds(task.director)
+          : getTaskPersonIds(task.aiMaker)).filter(Boolean);
+        personIds.forEach(pid => clearVideoOutput(task.id, videoIndex, role, ds, pid));
       }
-      clearVideoOutput(task.id, videoIndex, role, ds, personId);
       openDailyTaskDetail(task.id);
       renderDaily();
       showToast(`${icon('check', 16)} 已清除`);
@@ -13573,6 +13627,9 @@ function openDailyTaskDetail(taskId) {
             // plan 和 date（排产日期）保留，不清除
           }
         });
+        // 同步飞书资产计划表（整组清零后回写）
+        saveToFeishu('asset-plan-sync', { taskId: task.id, records: buildAssetPlanRecords(task) })
+          .catch(err => showToast('同步飞书失败：' + err.message));
       }
       openDailyTaskDetail(task.id);
       renderDaily();

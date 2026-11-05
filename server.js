@@ -488,6 +488,7 @@ app.get('/api/data/all', authMiddleware, async (req, res) => {
         taskId: taskRecordIdToTaskId[taskTrId] || taskTrId,
         taskRecordId: taskTrId,
         role: extractSelect(f.role),
+        videoIndex: Number(f.video_index) || 0,
         made: Number(f.made) || 0,
         modified: Number(f.modified) || 0,
         delivered: Number(f.delivered) || 0,
@@ -558,6 +559,7 @@ app.post('/api/data/schedules/batch', authMiddleware, async (req, res) => {
         fields.task = [taskIdToRecordId[r.taskId]];
       }
       if (r.role) fields.role = r.role;
+      if (r.videoIndex) fields.video_index = Number(r.videoIndex) || 0;
       fields.made = r.made || 0;
       fields.modified = r.modified || 0;
       fields.delivered = r.delivered || 0;
@@ -594,6 +596,7 @@ app.put('/api/data/schedules/:recordId', authMiddleware, async (req, res) => {
     const feishuFields = {};
 
     if (fields.date !== undefined) feishuFields.date = toFeishuDate(fields.date);
+    if (fields.videoIndex !== undefined) feishuFields.video_index = Number(fields.videoIndex) || 0;
     if (fields.made !== undefined) feishuFields.made = fields.made;
     if (fields.modified !== undefined) feishuFields.modified = fields.modified;
     if (fields.delivered !== undefined) feishuFields.delivered = fields.delivered;
@@ -841,6 +844,24 @@ app.put('/api/data/tasks/:recordId', authMiddleware, async (req, res) => {
     res.json({ record: resData.data.data.record });
   } catch (err) {
     console.error('更新商单错误:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== 写入接口：删除单条排产/产出记录（清除到全 0 时调用） =====
+app.delete('/api/data/schedules/:recordId', authMiddleware, async (req, res) => {
+  const { recordId } = req.params;
+  try {
+    const token = await getTenantToken();
+    const tableId = process.env.FEISHU_TABLE_SCHEDULES;
+    await axios.delete(
+      `${FEISHU_BASE}/bitable/v1/apps/${BASE_APP_TOKEN}/tables/${tableId}/records/${recordId}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    invalidateTableCache(tableId);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('删除排产记录错误:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
