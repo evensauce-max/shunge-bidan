@@ -6769,6 +6769,19 @@ Object.keys(STATUS_MAP).forEach(k => { STATUS_MAP_REV[STATUS_MAP[k]] = k; });
 const EMPLOY_MAP = { '正式员工': 'formal', '实习生': 'intern' };
 const EMPLOY_MAP_REV = { 'formal': '正式员工', 'intern': '实习生' };
 
+// ===== 全局 fetch 包装：免登拿到 token 后，所有 /api/ 请求自动带 Authorization =====
+// （飞书 webview 可能不写第三方 cookie，仅靠 cookie 会导致登录后拉数据 401 掉进演示模式）
+const __origFetch = window.fetch.bind(window);
+window.fetch = function(url, opts) {
+  if (window.__authToken && typeof url === 'string' && url.indexOf('/api/') === 0) {
+    opts = opts || {};
+    const headers = Object.assign({}, opts.headers);
+    if (!headers['Authorization']) headers['Authorization'] = 'Bearer ' + window.__authToken;
+    opts.headers = headers;
+  }
+  return __origFetch(url, opts);
+};
+
 async function loadFeishuData() {
   try {
     const res = await fetch('/api/data/all');
@@ -12197,6 +12210,7 @@ async function feishuLogin() {
       const data = await res.json();
       dbgLog('后端返回: ' + JSON.stringify(data), data.user ? 'ok' : 'warn');
       if (data.user) {
+        if (data.token) window.__authToken = data.token;
         window.__pendingFeishuUser = data.user; // 延迟到数据加载完再匹配身份
         window.history.replaceState({}, '', window.location.pathname);
         return true;
@@ -12220,6 +12234,7 @@ async function feishuLogin() {
         const data = await res.json();
         dbgLog('后端返回: ' + JSON.stringify(data), data.user ? 'ok' : 'warn');
         if (data.user) {
+          if (data.token) window.__authToken = data.token;
           window.__pendingFeishuUser = data.user; // 延迟到数据加载完再匹配身份
           return true;
         }
@@ -13983,6 +13998,11 @@ async function init() {
 
   // 再加载飞书数据
   let feishuOk = await loadFeishuData();
+
+  // 刚登录成功但拉取失败（cookie 尚未生效等），重试一次
+  if (!feishuOk && window.__pendingFeishuUser) {
+    feishuOk = await loadFeishuData();
+  }
 
   // 数据就绪后再匹配身份（人员表此时才可用）
   if (window.__pendingFeishuUser) {

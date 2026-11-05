@@ -164,7 +164,10 @@ function toFeishuDate(dateStr) {
 
 // ===== 认证中间件 =====
 function authMiddleware(req, res, next) {
-  const token = req.cookies.token;
+  // 优先 Authorization: Bearer（飞书 webview 可能拦截第三方 cookie），其次 cookie
+  let token = req.cookies.token;
+  const auth = req.headers.authorization || '';
+  if (auth.startsWith('Bearer ')) token = auth.slice(7);
   if (!token) return res.status(401).json({ error: '未登录' });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
@@ -213,7 +216,7 @@ app.get('/api/auth/feishu', async (req, res) => {
       };
       const jwtToken = jwt.sign(user, JWT_SECRET, { expiresIn: '7d' });
       res.cookie('token', jwtToken, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000, sameSite: 'lax' });
-      return res.json({ user });
+      return res.json({ user, token: jwtToken });
     }
 
     const { open_id, user_id, name, avatar_url } = loginRes.data.data;
@@ -225,7 +228,7 @@ app.get('/api/auth/feishu', async (req, res) => {
 
     const jwtToken = jwt.sign(user, JWT_SECRET, { expiresIn: '7d' });
     res.cookie('token', jwtToken, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000, sameSite: 'lax' });
-    res.json({ user });
+    res.json({ user, token: jwtToken });
   } catch (err) {
     console.error('飞书登录错误:', err.message);
     res.status(500).json({ error: '登录失败: ' + err.message });
