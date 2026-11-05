@@ -3641,11 +3641,11 @@
     color: #fff;
     background: #ff3b30;
   }
-  /* 不可编辑的（其他角色）：整体弱化 */
-  td:not(.role-highlight) .role-cell-content {
+  /* 不可编辑的（其他角色）：整体弱化。仅员工视角（viewer-employee）生效，管理员不弱化 */
+  .viewer-employee td:not(.role-highlight) .role-cell-content {
     opacity: 0.55;
   }
-  td:not(.role-highlight) .role-cell-value {
+  .viewer-employee td:not(.role-highlight) .role-cell-value {
     color: var(--text-secondary);
     font-weight: 400;
     cursor: default;
@@ -13607,7 +13607,10 @@ function openDailyTaskDetail(taskId) {
   }
 
   tableHtml += '</tbody></table>';
-  document.getElementById('dailyTaskDetailTable').innerHTML = tableHtml;
+  const detailTableEl = document.getElementById('dailyTaskDetailTable');
+  detailTableEl.innerHTML = tableHtml;
+  // 员工视角才弱化其他角色列；管理员全部正常显示
+  detailTableEl.classList.toggle('viewer-employee', !!highlightRole);
 
   // 绑定编导/AI制作师的"修改"按钮点击
   document.querySelectorAll('#dailyTaskDetailTable .role-cell-content.editable .cell-edit-btn').forEach(btn => {
