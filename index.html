@@ -3581,6 +3581,19 @@
     font-size: 10px;
     font-style: italic;
   }
+  .role-cell-line .line-val.line-hist {
+    color: var(--text-tertiary);
+    font-weight: 500;
+  }
+  /* 已交付锁定的单元格 */
+  .role-cell-content.deliver-locked {
+    opacity: 0.75;
+  }
+  .deliver-lock-hint {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    margin-top: 2px;
+  }
   /* 操作按钮行 */
   .role-cell-actions {
     display: flex;
@@ -3723,6 +3736,13 @@
     align-items: center;
     font-size: 11px;
     line-height: 1.6;
+  }
+  .asset-row-hist {
+    color: var(--text-tertiary);
+  }
+  .asset-row-hist .asset-col-num,
+  .asset-row-hist .asset-col-date {
+    color: var(--text-tertiary);
   }
   .asset-header-row {
     color: var(--text-tertiary);
@@ -7802,7 +7822,7 @@ function hasVideoAnyOutput(taskId, videoIndex, role) {
 // 某条视频最近一次制作 / 修改 / 交付的日期（用于在非当日视图里显示历史）
 function getVideoLastDates(taskId, videoIndex, role) {
   const task = getTask(taskId);
-  const empty = { madeDate: '', modifiedDate: '', deliverDate: '' };
+  const empty = { madeDate: '', modifiedDate: '', deliverDate: '', madeVal: 0, modifiedVal: 0 };
   if (!task) return empty;
   const outputKey = role === 'director' ? 'directorOutput' : 'aiOutput';
   if (!task[outputKey]) initVideoOutputForTask(task);
@@ -7810,8 +7830,8 @@ function getVideoLastDates(taskId, videoIndex, role) {
   const out = { ...empty };
   Object.keys(dates).sort().forEach(d => {
     const v = dates[d] || {};
-    if ((v.made || 0) > 0) out.madeDate = d;
-    if ((v.modified || 0) > 0) out.modifiedDate = d;
+    if ((v.made || 0) > 0) { out.madeDate = d; out.madeVal = v.made; }
+    if ((v.modified || 0) > 0) { out.modifiedDate = d; out.modifiedVal = v.modified; }
     if ((v.delivered || 0) > 0) out.deliverDate = d;
   });
   return out;
@@ -13093,19 +13113,33 @@ function buildRoleStatusLines(status, last, ds) {
     ? '✓ 已交付'
     : (status.hasOutput ? '未交付' : '未编辑');
   const deliverDate = status.dailyDelivered ? ds : (last.deliverDate || '');
-  const madeVal = status.dailyMade > 0 ? `<span class="line-val">${status.dailyMade}</span>` : '';
-  const madeDate = status.dailyMade > 0
-    ? formatShortDate(ds)
-    : (last.madeDate ? `<span class="line-unedited">上次 ${formatShortDate(last.madeDate)}</span>` : '<span class="line-unedited">未编辑</span>');
-  const modVal = status.dailyModified > 0 ? `<span class="line-val">${status.dailyModified}</span>` : '';
-  const modDate = status.dailyModified > 0
-    ? formatShortDate(ds)
-    : (last.modifiedDate ? `<span class="line-unedited">上次 ${formatShortDate(last.modifiedDate)}</span>` : '<span class="line-unedited">未编辑</span>');
+  // 制作：优先显示当天，否则显示最近一次的数量+日期（灰色历史）
+  let madeVal = '', madeDate = '';
+  if (status.dailyMade > 0) {
+    madeVal = `<span class="line-val">${status.dailyMade}</span>`;
+    madeDate = formatShortDate(ds);
+  } else if (last.madeDate) {
+    madeVal = `<span class="line-val line-hist">${last.madeVal}</span>`;
+    madeDate = `<span class="line-unedited">${formatShortDate(last.madeDate)}</span>`;
+  } else {
+    madeDate = '<span class="line-unedited">未编辑</span>';
+  }
+  let modVal = '', modDate = '';
+  if (status.dailyModified > 0) {
+    modVal = `<span class="line-val">${status.dailyModified}</span>`;
+    modDate = formatShortDate(ds);
+  } else if (last.modifiedDate) {
+    modVal = `<span class="line-val line-hist">${last.modifiedVal}</span>`;
+    modDate = `<span class="line-unedited">${formatShortDate(last.modifiedDate)}</span>`;
+  } else {
+    modDate = '<span class="line-unedited">未编辑</span>';
+  }
+  const deliverIsHist = !status.dailyDelivered && !!last.deliverDate;
   return `
     <div class="role-cell-lines">
       <div class="role-cell-line">
         <span class="line-left ${delivered ? 'line-delivered' : 'line-not-delivered'}">${deliverLabel}</span>
-        <span class="line-date">${deliverDate ? formatShortDate(deliverDate) : ''}</span>
+        <span class="line-date">${deliverDate ? (deliverIsHist ? `<span class="line-unedited">${formatShortDate(deliverDate)}</span>` : formatShortDate(deliverDate)) : ''}</span>
       </div>
       <div class="role-cell-line">
         <span class="line-left">制作${madeVal}</span>
@@ -13399,7 +13433,7 @@ function openDailyTaskDetail(taskId) {
     const assetPersonId = (highlightRole === 'asset' && currentUser && currentUser.id) ? currentUser.id : null;
     const assetList = assetTypes.map(type => {
       const a = assetRawData[type];
-      let plan = 0, made = 0, modified = 0, delivered = 0, date = '', editDate = '';
+      let plan = 0, made = 0, modified = 0, delivered = 0, date = '', editDate = '', isHist = false;
       if (a) {
         // 计划：排产日期是当天的才算
         if (a.date === ds) {
@@ -13414,9 +13448,18 @@ function openDailyTaskDetail(taskId) {
             delivered = a.delivered || 0;
             editDate = a.editDate;
           }
+        } else if (a.editDate && (a.made > 0 || a.modified > 0 || a.delivered > 0)) {
+          // 历史：编辑日期不是当天但有产出，灰色展示（不计入当天统计）
+          if (!assetPersonId || a.personId === assetPersonId) {
+            made = a.made || 0;
+            modified = a.modified || 0;
+            delivered = a.delivered || 0;
+            editDate = a.editDate;
+            isHist = true;
+          }
         }
       }
-      return { type, label: assetLabelMap[type], plan, made, modified, delivered, date, editDate,
+      return { type, label: assetLabelMap[type], plan, made, modified, delivered, date, editDate, isHist,
         hasData: plan > 0 || made > 0 || modified > 0 || delivered > 0 };
     });
 
@@ -13443,16 +13486,20 @@ function openDailyTaskDetail(taskId) {
     const dirCanEdit = canEditRole('director');
     const dirHasData = dirStatus.dailyMade > 0 || dirStatus.dailyModified > 0 || dirStatus.dailyDelivered
       || !!dirLast.madeDate || !!dirLast.deliverDate || !!dirLast.modifiedDate;
+    // 交付锁定：该视频已在其他日期交付，非交付日当天整格只读
+    const dirDeliverLocked = !!(dirLast.deliverDate && dirLast.deliverDate !== ds && !dirStatus.dailyDelivered);
     const dirCell = `
-      <div class="role-cell-content ${dirCanEdit ? 'editable' : ''}" data-role="director" data-video="${i}">
+      <div class="role-cell-content ${dirCanEdit ? 'editable' : ''} ${dirDeliverLocked ? 'deliver-locked' : ''}" data-role="director" data-video="${i}">
         ${dirHasData ? `
           ${buildRoleStatusLines(dirStatus, dirLast, ds)}
-          ${dirCanEdit ? `
+          ${dirDeliverLocked ? `
+            <div class="deliver-lock-hint">已于 ${formatShortDate(dirLast.deliverDate)} 交付，回到当日可修改</div>
+          ` : (dirCanEdit ? `
             <div class="role-cell-actions">
               <span class="cell-edit-btn" data-action="edit">修改</span>
               <span class="cell-clear-btn" data-action="clear">清除</span>
             </div>
-          ` : ''}
+          ` : '')}
         ` : `
           <div class="role-cell-value is-zero ${dirCanEdit ? '' : 'is-readonly'}">
             ${dirCanEdit ? '<span class="cell-edit-btn">编辑</span>' : '—'}
@@ -13465,16 +13512,19 @@ function openDailyTaskDetail(taskId) {
     const aiCanEdit = canEditRole('ai');
     const aiHasData = aiStatus.dailyMade > 0 || aiStatus.dailyModified > 0 || aiStatus.dailyDelivered
       || !!aiLast.madeDate || !!aiLast.deliverDate || !!aiLast.modifiedDate;
+    const aiDeliverLocked = !!(aiLast.deliverDate && aiLast.deliverDate !== ds && !aiStatus.dailyDelivered);
     const aiCell = `
-      <div class="role-cell-content ${aiCanEdit ? 'editable' : ''}" data-role="ai" data-video="${i}">
+      <div class="role-cell-content ${aiCanEdit ? 'editable' : ''} ${aiDeliverLocked ? 'deliver-locked' : ''}" data-role="ai" data-video="${i}">
         ${aiHasData ? `
           ${buildRoleStatusLines(aiStatus, aiLast, ds)}
-          ${aiCanEdit ? `
+          ${aiDeliverLocked ? `
+            <div class="deliver-lock-hint">已于 ${formatShortDate(aiLast.deliverDate)} 交付，回到当日可修改</div>
+          ` : (aiCanEdit ? `
             <div class="role-cell-actions">
               <span class="cell-edit-btn" data-action="edit">修改</span>
               <span class="cell-clear-btn" data-action="clear">清除</span>
             </div>
-          ` : ''}
+          ` : '')}
         ` : `
           <div class="role-cell-value is-zero ${aiCanEdit ? '' : 'is-readonly'}">
             ${aiCanEdit ? '<span class="cell-edit-btn">编辑</span>' : '—'}
@@ -13493,10 +13543,11 @@ function openDailyTaskDetail(taskId) {
       let rowsHtml = '';
       assetList.forEach(a => {
         const dateText = a.editDate ? formatShortDate(a.editDate) : '未编辑';
+        const histCls = a.isHist ? ' asset-row-hist' : '';
         rowsHtml += `
-          <div class="asset-row">
+          <div class="asset-row${histCls}">
             <span class="asset-col asset-col-label">${a.label}</span>
-            <span class="asset-col asset-col-date ${a.editDate ? 'has-date' : ''}">${dateText}</span>
+            <span class="asset-col asset-col-date ${a.editDate ? 'has-date' : ''}">${dateText}${a.isHist ? '（历史）' : ''}</span>
             <span class="asset-col asset-col-num">${a.plan}</span>
             <span class="asset-col asset-col-num">${a.delivered}</span>
             <span class="asset-col asset-col-num">${a.made}</span>
@@ -13788,10 +13839,14 @@ function openDailyCellEditor(taskId, videoIndex, role, field, assetType) {
       modified: output.modified || 0,
       delivered: output.delivered || 0
     };
-    // 交付锁定：该视频已在其他日期交付过，当天不允许再标注交付
+    // 交付锁定：该视频已在其他日期交付过，非交付日当天整格只读（制作/修改/交付都不可改）
     const lastDates = getVideoLastDates(taskId, videoIndex, role);
     deliverLocked = !!(lastDates.deliverDate && lastDates.deliverDate !== ds && !output.delivered);
     deliverLockDate = deliverLocked ? lastDates.deliverDate : '';
+    if (deliverLocked) {
+      showToast(`该视频已于 ${formatShortDate(deliverLockDate)} 交付，如需修改请回到当日编辑`);
+      return;
+    }
     // 存 personId 供保存时用
     currentEditingPersonId = targetPersonId;
   }
