@@ -36,6 +36,26 @@ async function getTenantToken() {
   throw new Error('获取 tenant_access_token 失败: ' + res.data.msg);
 }
 
+// ===== 飞书调用重试（限流/临时错误自动重试一次） =====
+function isRetryableFeishuError(err) {
+  const code = err.response?.data?.code;
+  const status = err.response?.status;
+  // 99991400=触发限流；429/5xx 为临时网关错误；网络层无响应也重试
+  return code === 99991400 || status === 429 || (status >= 500) || !err.response;
+}
+
+async function feishuCall(fn, retries = 1) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (retries > 0 && isRetryableFeishuError(err)) {
+      await new Promise(r => setTimeout(r, 1000));
+      return feishuCall(fn, retries - 1);
+    }
+    throw err;
+  }
+}
+
 // ===== 通用 Base 操作 =====
 // ===== 表数据短缓存（15 秒），写入时失效，避免每次保存都重拉整表做 ID 映射 =====
 const tableCache = {};
@@ -54,7 +74,7 @@ async function baseGetAllRecords(tableId) {
   do {
     let url = `${FEISHU_BASE}/bitable/v1/apps/${BASE_APP_TOKEN}/tables/${tableId}/records?page_size=500`;
     if (pageToken) url += `&page_token=${pageToken}`;
-    const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await feishuCall(() => axios.get(url, { headers: { Authorization: `Bearer ${token}` } }));
     if (res.data.code !== 0) throw new Error(res.data.msg);
     allItems = allItems.concat(res.data.data.items || []);
     pageToken = res.data.data.has_more ? res.data.data.page_token : '';
@@ -65,11 +85,11 @@ async function baseGetAllRecords(tableId) {
 
 async function baseBatchCreate(tableId, records) {
   const token = await getTenantToken();
-  const res = await axios.post(
+  const res = await feishuCall(() => axios.post(
     `${FEISHU_BASE}/bitable/v1/apps/${BASE_APP_TOKEN}/tables/${tableId}/records/batch_create`,
     { records },
     { headers: { Authorization: `Bearer ${token}` } }
-  );
+  ));
   if (res.data.code !== 0) throw new Error(res.data.msg);
   invalidateTableCache(tableId);
   return res.data.data.records || [];
@@ -77,11 +97,11 @@ async function baseBatchCreate(tableId, records) {
 
 async function baseBatchUpdate(tableId, records) {
   const token = await getTenantToken();
-  const res = await axios.post(
+  const res = await feishuCall(() => axios.post(
     `${FEISHU_BASE}/bitable/v1/apps/${BASE_APP_TOKEN}/tables/${tableId}/records/batch_update`,
     { records },
     { headers: { Authorization: `Bearer ${token}` } }
-  );
+  ));
   if (res.data.code !== 0) throw new Error(res.data.msg);
   invalidateTableCache(tableId);
   return res.data.data.records || [];
@@ -89,11 +109,11 @@ async function baseBatchUpdate(tableId, records) {
 
 async function baseBatchDelete(tableId, recordIds) {
   const token = await getTenantToken();
-  const res = await axios.post(
+  const res = await feishuCall(() => axios.post(
     `${FEISHU_BASE}/bitable/v1/apps/${BASE_APP_TOKEN}/tables/${tableId}/records/batch_delete`,
     { records: recordIds },
     { headers: { Authorization: `Bearer ${token}` } }
-  );
+  ));
   if (res.data.code !== 0) throw new Error(res.data.msg);
   invalidateTableCache(tableId);
   return true;
@@ -941,9 +961,10 @@ app.post('/api/data/schedules/sync-plan', authMiddleware, async (req, res) => {
         if (r.note) fields.note = r.note;
         return { fields };
       });
-    if (feishuRecords.length) await baseBatchCreate(tableId, feishuRecords);
+    // 返回创建的记录，前端回填 record_id，避免每日产出编辑时重复新建
+    const created = feishuRecords.length ? await baseBatchCreate(tableId, feishuRecords) : [];
 
-    res.json({ success: true, count: feishuRecords.length });
+    res.json({ success: true, count: feishuRecords.length, records: created });
   } catch (err) {
     console.error('同步排产计划错误:', err.message);
     res.status(500).json({ error: err.message });

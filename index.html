@@ -6956,6 +6956,7 @@ const ASSET_LABEL_TO_TYPE = { '角色': 'char', '场景': 'scene', '分镜': 'sb
 // 商单 → 飞书字段
 function taskToFeishuFields(task) {
   return {
+    taskId: task.name,   // task_id 用商单名称（主列展示用，如 BC-Nov-1）
     brand: task.brand,
     name: task.name,
     startDate: task.startDate,
@@ -10019,6 +10020,13 @@ function savePlan() {
           planned: r.planned, made: 0, modified: 0, delivered: 0, note: ''
         };
       })
+    }).then(function(r) {
+      // 回填飞书 record_id，之后编辑每日产出走更新而不是重复新建
+      if (r && r.records) {
+        r.records.forEach(function(rec, i) {
+          if (planRecords[i]) planRecords[i].id = rec.record_id || rec.id;
+        });
+      }
     }).catch(function(err) { showToast('排产计划同步飞书失败：' + err.message); });
 
     saveToFeishu('asset-plan-sync', {
