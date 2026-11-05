@@ -13743,6 +13743,8 @@ function openDailyCellEditor(taskId, videoIndex, role, field, assetType) {
   let isAssetEdit = false;
   let currentEditingPersonId = null;
   let ownerIds = [];
+  let deliverLocked = false;
+  let deliverLockDate = '';
 
   // 资产类型：从task.assetPlan读写
   if (role === 'asset' && assetType) {
@@ -13786,12 +13788,16 @@ function openDailyCellEditor(taskId, videoIndex, role, field, assetType) {
       modified: output.modified || 0,
       delivered: output.delivered || 0
     };
+    // 交付锁定：该视频已在其他日期交付过，当天不允许再标注交付
+    const lastDates = getVideoLastDates(taskId, videoIndex, role);
+    deliverLocked = !!(lastDates.deliverDate && lastDates.deliverDate !== ds && !output.delivered);
+    deliverLockDate = deliverLocked ? lastDates.deliverDate : '';
     // 存 personId 供保存时用
     currentEditingPersonId = targetPersonId;
   }
   document.getElementById('dailyCellSub').textContent = subText;
 
-  currentDailyCell = { taskId, videoIndex, role, field, assetType, record: rec, isAssetEdit, personId: currentEditingPersonId, ownerIds, date: ds };
+  currentDailyCell = { taskId, videoIndex, role, field, assetType, record: rec, isAssetEdit, personId: currentEditingPersonId, ownerIds, date: ds, deliverLocked, deliverLockDate };
 
   // 渲染编辑表单
   if (isAssetEdit) {
@@ -13825,12 +13831,20 @@ function openDailyCellEditor(taskId, videoIndex, role, field, assetType) {
     document.getElementById('dailyCellBody').innerHTML = `
       ${buildOwnerPicker(ownerIds, currentEditingPersonId)}
       <div class="daily-editor-deliver">
-        <label class="daily-editor-checkbox" id="deliverCheckbox" onclick="toggleDailyDeliver()">
-          <span class="checkbox-box" id="deliverCheckboxBox">
-            ${rec.delivered ? icon('check', 14) : ''}
-          </span>
-          <span class="checkbox-label">已交付</span>
-        </label>
+        ${deliverLocked ? `
+          <label class="daily-editor-checkbox is-disabled" style="opacity:0.55;cursor:not-allowed">
+            <span class="checkbox-box checked">${icon('check', 14)}</span>
+            <span class="checkbox-label">已于 ${formatShortDate(deliverLockDate)} 交付</span>
+          </label>
+          <div class="form-hint" style="margin-top:4px">该视频已在 ${formatShortDate(deliverLockDate)} 标注交付，如需修改请回到该日期编辑</div>
+        ` : `
+          <label class="daily-editor-checkbox" id="deliverCheckbox" onclick="toggleDailyDeliver()">
+            <span class="checkbox-box" id="deliverCheckboxBox">
+              ${rec.delivered ? icon('check', 14) : ''}
+            </span>
+            <span class="checkbox-label">已交付</span>
+          </label>
+        `}
       </div>
       <div class="form-field">
         <label>制作数量(${unitLabel})<span class="form-hint">含品牌审核后修改的次数</span></label>
@@ -13861,6 +13875,7 @@ function openDailyCellEditor(taskId, videoIndex, role, field, assetType) {
 
 function toggleDailyDeliver() {
   if (!currentDailyCell || currentDailyCell.isAssetEdit) return;
+  if (currentDailyCell.deliverLocked) return;
   currentDailyCell.delivered = !currentDailyCell.delivered;
   const box = document.getElementById('deliverCheckboxBox');
   if (box) {
@@ -14028,7 +14043,8 @@ async function saveDailyCell() {
     // 编导/AI制作师：用 saveVideoOutput 保存（同步写 output 和 schedules）
     const madeVal = parseInt(document.getElementById('dailyCellMade').value) || 0;
     const modifiedVal = parseInt(document.getElementById('dailyCellModified').value) || 0;
-    const deliveredVal = currentDailyCell.delivered ? 1 : 0;
+    // 交付锁定时强制为 0，防止绕过 UI 重复标注
+    const deliveredVal = currentDailyCell.deliverLocked ? 0 : (currentDailyCell.delivered ? 1 : 0);
     saveVideoOutput(
       currentDailyCell.taskId,
       currentDailyCell.videoIndex,
