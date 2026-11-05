@@ -5596,7 +5596,7 @@
 <body>
 
 <!-- Loading -->
-<div class="loading-screen" id="loadingScreen" style="display: none;">
+<div class="loading-screen" id="loadingScreen">
   <img src="assets/logo.png" alt="瞬格" onerror="this.style.display='none'">
   <div class="loading-spinner"></div>
   <div class="loading-text">加载中...</div>
@@ -9726,7 +9726,7 @@ function renderDatePicker() {
 
   document.getElementById('dpDays').innerHTML = html;
 
-  document.querySelectorAll('#dpDays .dp-day:not(.past)').forEach(function(el) {
+  document.querySelectorAll('#dpDays .dp-day').forEach(function(el) {
     el.onclick = function() { selectDate(this.dataset.date); };
   });
 
