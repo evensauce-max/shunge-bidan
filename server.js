@@ -488,6 +488,7 @@ app.get('/api/data/all', authMiddleware, async (req, res) => {
         taskId: taskRecordIdToTaskId[taskTrId] || taskTrId,
         taskRecordId: taskTrId,
         role: extractSelect(f.role),
+        assetType: extractSelect(f.asset_type),
         videoIndex: Number(f.video_index) || 0,
         made: Number(f.made) || 0,
         modified: Number(f.modified) || 0,
@@ -559,6 +560,7 @@ app.post('/api/data/schedules/batch', authMiddleware, async (req, res) => {
         fields.task = [taskIdToRecordId[r.taskId]];
       }
       if (r.role) fields.role = r.role;
+      if (r.assetType) fields.asset_type = r.assetType;
       if (r.videoIndex) fields.video_index = Number(r.videoIndex) || 0;
       fields.made = r.made || 0;
       fields.modified = r.modified || 0;
@@ -596,6 +598,7 @@ app.put('/api/data/schedules/:recordId', authMiddleware, async (req, res) => {
     const feishuFields = {};
 
     if (fields.date !== undefined) feishuFields.date = toFeishuDate(fields.date);
+    if (fields.assetType !== undefined && fields.assetType) feishuFields.asset_type = fields.assetType;
     if (fields.videoIndex !== undefined) feishuFields.video_index = Number(fields.videoIndex) || 0;
     if (fields.made !== undefined) feishuFields.made = fields.made;
     if (fields.modified !== undefined) feishuFields.modified = fields.modified;

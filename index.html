@@ -6850,13 +6850,10 @@ async function loadFeishuData() {
         assetPlan[vi].asset[type] = {
           plan: a.planQty || 0,
           qty: a.planQty || 0,
-          made: Number(a.made) || 0,
-          modified: Number(a.modified) || 0,
-          delivered: Number(a.delivered) || 0,
           date: a.planDate || '',
-          editDate: a.editDate || '',
           note: a.note || '',
           personId: a.personId || '',
+          daily: {},
         };
       });
 
@@ -6891,6 +6888,7 @@ async function loadFeishuData() {
       personId: s.personId,
       taskId: s.taskId,
       role: s.role,
+      videoIndex: s.videoIndex || 0,
       made: s.made || 0,
       modified: s.modified || 0,
       delivered: s.delivered || 0,
@@ -6907,6 +6905,7 @@ async function loadFeishuData() {
       isPlanRecord: s.isPlanRecord === true,
       deliverNote: s.note || '',
       note: s.note || '',
+      assetType: s.assetType || '',
     }));
 
     // 回收站：飞书中被软删除的商单（连同其排产记录，从主数据中剔除）
@@ -6938,6 +6937,8 @@ async function loadFeishuData() {
 
     // 6. 重建每条视频的排产日期（飞书无此字段，需从排产计划记录反推）
     rebuildPlanMaps();
+    // 6.5 重建资产按天流水（从 schedules 中的资产设计师非计划记录回填 assetPlan.daily）
+    rebuildAssetDaily();
 
     feishuDataLoaded = true;
     console.log('[飞书] 数据加载成功:', DATA.persons.length + '人', DATA.tasks.length + '商单', DATA.schedules.length + '条排产');
@@ -7010,16 +7011,12 @@ function buildAssetPlanRecords(task) {
       if (!ASSET_TYPE_TO_LABEL[type]) return;
       const a = asset[type] || {};
       const qty = a.qty !== undefined ? a.qty : (a.plan || 0);
-      if (!qty && !a.date && !a.made && !a.modified && !a.delivered) return;
+      if (!qty && !a.date) return;
       out.push({
         videoIndex: parseInt(vi),
         assetType: ASSET_TYPE_TO_LABEL[type],
         planQty: qty || 0,
         planDate: a.date || '',
-        made: a.made || 0,
-        modified: a.modified || 0,
-        delivered: a.delivered || 0,
-        editDate: a.editDate || '',
         personId: a.personId || '',
         note: a.note || '',
       });
@@ -7049,6 +7046,7 @@ function persistScheduleRecord(rec) {
       deliveredChar: rec.deliveredChar || 0,
       deliveredScene: rec.deliveredScene || 0,
       deliveredSb: rec.deliveredSb || 0,
+      assetType: rec.assetType || '',
     };
     saveToFeishu('schedules-update', { recordId: rec.id, fields })
       .catch(err => showToast('同步飞书失败：' + err.message));
@@ -7074,6 +7072,7 @@ function persistScheduleRecord(rec) {
       deliveredChar: rec.deliveredChar || 0,
       deliveredScene: rec.deliveredScene || 0,
       deliveredSb: rec.deliveredSb || 0,
+      assetType: rec.assetType || '',
     };
     saveToFeishu('schedules-batch', { records: [payload] })
       .then(r => {
@@ -7833,6 +7832,136 @@ function getTaskPersonIds(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value;
   return String(value).split(',').map(s => s.trim()).filter(Boolean);
+}
+
+// ===== 资产按天流水 =====
+// 从 schedules 的资产设计师流水（非计划记录、带 assetType）回填 assetPlan.daily
+function rebuildAssetDaily() {
+  DATA.schedules.forEach(s => {
+    if (s.role !== '资产设计师' || s.isPlanRecord || !s.assetType) return;
+    const type = ASSET_LABEL_TO_TYPE[s.assetType];
+    const vi = s.videoIndex || 0;
+    if (!type || vi <= 0) return;
+    const task = getTask(s.taskId);
+    if (!task) return;
+    if (!task.assetPlan) task.assetPlan = {};
+    if (!task.assetPlan[vi]) task.assetPlan[vi] = { asset: {} };
+    if (!task.assetPlan[vi].asset[type]) {
+      task.assetPlan[vi].asset[type] = { plan: 0, qty: 0, date: '', note: '', personId: '', daily: {} };
+    }
+    const slot = task.assetPlan[vi].asset[type];
+    if (!slot.daily) slot.daily = {};
+    slot.daily[s.date] = {
+      made: s.made || 0,
+      modified: s.modified || 0,
+      delivered: s.delivered || 0,
+      personId: s.personId || '',
+    };
+  });
+}
+
+// 读取某个资产类型某天的流水
+function getAssetDaily(taskId, vi, type, date) {
+  const task = getTask(taskId);
+  const empty = { made: 0, modified: 0, delivered: 0, personId: '' };
+  if (!task || !task.assetPlan || !task.assetPlan[vi]) return empty;
+  const a = task.assetPlan[vi].asset && task.assetPlan[vi].asset[type];
+  if (!a || !a.daily || !a.daily[date]) return empty;
+  return a.daily[date];
+}
+
+// 某个资产类型最近一次制作 / 修改 / 交付的日期（跨天流水）
+function getAssetLastDates(taskId, vi, type) {
+  const task = getTask(taskId);
+  const out = { madeDate: '', madeVal: 0, modifiedDate: '', modifiedVal: 0, deliverDate: '', deliverVal: 0 };
+  if (!task || !task.assetPlan || !task.assetPlan[vi]) return out;
+  const a = task.assetPlan[vi].asset && task.assetPlan[vi].asset[type];
+  const dates = (a && a.daily) || {};
+  Object.keys(dates).sort().forEach(d => {
+    const v = dates[d] || {};
+    if ((v.made || 0) > 0) { out.madeDate = d; out.madeVal = v.made; }
+    if ((v.modified || 0) > 0) { out.modifiedDate = d; out.modifiedVal = v.modified; }
+    if ((v.delivered || 0) > 0) { out.deliverDate = d; out.deliverVal = v.delivered; }
+  });
+  return out;
+}
+
+// 保存某个资产类型某天的产出（一天一笔，多人/多天互不覆盖）
+function saveAssetOutput(taskId, vi, type, date, personId, data) {
+  const task = getTask(taskId);
+  if (!task) return;
+  if (!task.assetPlan) task.assetPlan = {};
+  if (!task.assetPlan[vi]) task.assetPlan[vi] = { asset: {} };
+  if (!task.assetPlan[vi].asset[type]) {
+    task.assetPlan[vi].asset[type] = { plan: 0, qty: 0, date: '', note: '', personId: '', daily: {} };
+  }
+  const slot = task.assetPlan[vi].asset[type];
+  if (!slot.daily) slot.daily = {};
+  if (!slot.daily[date]) slot.daily[date] = { made: 0, modified: 0, delivered: 0, personId: personId };
+
+  const old = slot.daily[date];
+  const newMade = data.made !== undefined ? data.made : (old.made || 0);
+  const newModified = data.modified !== undefined ? data.modified : (old.modified || 0);
+  const newDelivered = data.delivered !== undefined ? data.delivered : (old.delivered || 0);
+  old.made = newMade;
+  old.modified = newModified;
+  old.delivered = newDelivered;
+  old.personId = personId;
+
+  // 全零：清掉当天槽位
+  if (newMade === 0 && newModified === 0 && newDelivered === 0) {
+    delete slot.daily[date];
+  }
+
+  // 同步 schedules：一条 = 商单×视频×资产类型×日期×归属人
+  const label = ASSET_TYPE_TO_LABEL[type];
+  let rec = DATA.schedules.find(s =>
+    s.taskId === taskId && s.date === date && s.role === '资产设计师'
+    && s.personId === personId && !s.isPlanRecord
+    && s.assetType === label && (s.videoIndex || 0) === vi
+  );
+  if (!rec && (newMade !== 0 || newModified !== 0 || newDelivered !== 0)) {
+    rec = {
+      date: date,
+      videoIndex: vi,
+      personId: personId,
+      taskId: taskId,
+      role: '资产设计师',
+      assetType: label,
+      planned: 0,
+      made: 0,
+      modified: 0,
+      delivered: 0,
+      deliverNote: '',
+      isPlanRecord: false,
+    };
+    DATA.schedules.push(rec);
+  }
+  if (rec) {
+    rec.made = newMade;
+    rec.modified = newModified;
+    rec.delivered = newDelivered;
+    if (rec.made === 0 && rec.modified === 0 && rec.delivered === 0) {
+      DATA.schedules = DATA.schedules.filter(s => s !== rec);
+      if (rec.id) {
+        saveToFeishu('schedule-delete', { recordId: rec.id })
+          .catch(err => showToast('同步飞书失败：' + err.message));
+      }
+    } else {
+      persistScheduleRecord(rec);
+    }
+  }
+}
+
+// 清除某个资产类型某天的产出
+function clearAssetOutput(taskId, vi, type, date, personId) {
+  saveAssetOutput(taskId, vi, type, date, personId, { made: 0, modified: 0, delivered: 0 });
+}
+
+// 资产是否被交付锁定：已交付且交付日不是当天 → 只能回到交付当天修改
+function isAssetLocked(taskId, vi, type, ds) {
+  const last = getAssetLastDates(taskId, vi, type);
+  return !!(last.deliverDate && last.deliverDate !== ds);
 }
 
 // 渲染下拉多选人员列表
@@ -9467,6 +9596,7 @@ function openPlanModal(taskId, personId, readOnly = false) {
           var a = planVideoData[vi].asset[type];
           if (a && a.qty === undefined) a.qty = a.plan || 0;
           if (a && a.plan === undefined) a.plan = a.qty || 0;
+          if (a) delete a.daily; // 产出流水不进入排产编辑
         });
       }
     }
@@ -9966,6 +10096,20 @@ function savePlan() {
   var task = planTask;
 
   // 保存资产排产数据到 task.assetPlan（精确的每条视频资产数据）
+  // 先暂存旧的按天流水，重建后合回，避免排产保存清掉产出数据
+  var oldDaily = {};
+  if (task.assetPlan) {
+    Object.keys(task.assetPlan).forEach(function(vi) {
+      var asset = task.assetPlan[vi] && task.assetPlan[vi].asset;
+      if (!asset) return;
+      Object.keys(asset).forEach(function(type) {
+        if (asset[type] && asset[type].daily && Object.keys(asset[type].daily).length > 0) {
+          if (!oldDaily[vi]) oldDaily[vi] = {};
+          oldDaily[vi][type] = asset[type].daily;
+        }
+      });
+    });
+  }
   task.assetPlan = {};
   // 保存编导和AI的每条视频排产日期
   task.directorPlan = {};
@@ -9974,6 +10118,16 @@ function savePlan() {
     task.assetPlan[vi] = {
       asset: JSON.parse(JSON.stringify(planVideoData[vi].asset))
     };
+    // 合回按天流水
+    if (oldDaily[vi]) {
+      Object.keys(oldDaily[vi]).forEach(function(type) {
+        if (!task.assetPlan[vi].asset[type]) {
+          task.assetPlan[vi].asset[type] = { plan: 0, qty: 0, date: '', note: '', personId: '', daily: oldDaily[vi][type] };
+        } else {
+          task.assetPlan[vi].asset[type].daily = oldDaily[vi][type];
+        }
+      });
+    }
     task.directorPlan[vi] = planVideoData[vi].director || '';
     task.aiPlan[vi] = planVideoData[vi].ai || '';
   }
@@ -10194,7 +10348,7 @@ function renderDaily() {
           const a = vp.asset[type];
           if (!a) return;
           // 当天有排产或有产出就算
-          if (a.date === ds || (a.editDate === ds && a.personId === person.id)) {
+          if (a.date === ds || (a.daily && a.daily[ds] && a.daily[ds].personId === person.id)) {
             hasToday = true;
           }
         });
@@ -10238,7 +10392,7 @@ function renderDaily() {
     }
   });
   document.getElementById('dsPlan').textContent = totalPlan;
-  // 制作/交付/修改：资产设计师从 assetPlan 按 editDate+personId 统计，其他从 schedules 统计
+  // 制作/交付/修改：资产设计师从 assetPlan 按天流水统计，其他从 schedules 统计
   let realMade = 0, realModified = 0, realDelivered = 0;
   if (planRole === 'asset') {
     const assetPersonId = person ? person.id : null;
@@ -10249,12 +10403,13 @@ function renderDaily() {
         if (vp && vp.asset) {
           ['char', 'scene', 'sb', 'other'].forEach(type => {
             const a = vp.asset[type];
-            if (a && a.editDate === ds) {
+            if (a && a.daily && a.daily[ds]) {
+              const d = a.daily[ds];
               // 员工视角：只统计这个人的产出
-              if (assetPersonId && a.personId !== assetPersonId) return;
-              realMade += a.made || 0;
-              realModified += a.modified || 0;
-              realDelivered += a.delivered || 0;
+              if (assetPersonId && d.personId !== assetPersonId) return;
+              realMade += d.made || 0;
+              realModified += d.modified || 0;
+              realDelivered += d.delivered || 0;
             }
           });
         }
@@ -10383,7 +10538,7 @@ function renderDaily() {
             }
           }
         }
-        // 实际产出：资产设计师从 assetPlan 按 editDate+personId 统计，其他角色从 schedules 统计
+        // 实际产出：资产设计师从 assetPlan 按天流水统计，其他角色从 schedules 统计
         let made = 0, modified = 0, delivered = 0;
         if (roleForPlan === 'asset' && task.assetPlan) {
           const assetPersonId = person ? person.id : null;
@@ -10391,12 +10546,13 @@ function renderDaily() {
             const a = task.assetPlan[vi] && task.assetPlan[vi].asset;
             if (a) {
               Object.values(a).forEach(v => {
-                if (v && v.editDate === ds) {
+                if (v && v.daily && v.daily[ds]) {
+                  const d = v.daily[ds];
                   // 员工视角：只统计这个人的产出
-                  if (assetPersonId && v.personId !== assetPersonId) return;
-                  made += v.made || 0;
-                  modified += v.modified || 0;
-                  delivered += v.delivered || 0;
+                  if (assetPersonId && d.personId !== assetPersonId) return;
+                  made += d.made || 0;
+                  modified += d.modified || 0;
+                  delivered += d.delivered || 0;
                 }
               });
             }
@@ -10477,7 +10633,7 @@ function renderDaily() {
         ['char', 'scene', 'sb', 'other'].forEach(type => {
           const a = vp.asset[type];
           if (!a) return;
-          if (a.date === ds || (a.editDate === ds && a.personId === person.id)) {
+          if (a.date === ds || (a.daily && a.daily[ds] && a.daily[ds].personId === person.id)) {
             hasToday = true;
           }
         });
@@ -10519,9 +10675,9 @@ function renderDaily() {
           const a = vp.asset[type];
           if (!a) return;
           if (a.date === ds) assetPlan += a.plan !== undefined ? a.plan : (a.qty || 0);
-          if (a.editDate === ds && a.personId === person.id) {
-            assetMade += a.made || 0;
-            assetDelivered += a.delivered || 0;
+          if (a.daily && a.daily[ds] && a.daily[ds].personId === person.id) {
+            assetMade += a.daily[ds].made || 0;
+            assetDelivered += a.daily[ds].delivered || 0;
           }
         });
       });
@@ -10582,7 +10738,7 @@ function renderDaily() {
         }
       }
     }
-    // 实际产出：资产设计师从 assetPlan 按 editDate+personId 统计，其他角色从 schedules 统计
+    // 实际产出：资产设计师从 assetPlan 按天流水统计，其他角色从 schedules 统计
     let made = 0, modified = 0, delivered = 0;
     if (cardPlanRole === 'asset' && task.assetPlan) {
       const assetPersonId = person ? person.id : null;
@@ -10590,12 +10746,13 @@ function renderDaily() {
         if (vp && vp.asset) {
           ['char', 'scene', 'sb', 'other'].forEach(type => {
             const a = vp.asset[type];
-            if (a && a.editDate === ds) {
+            if (a && a.daily && a.daily[ds]) {
+              const d = a.daily[ds];
               // 员工视角：只统计这个人的产出
-              if (assetPersonId && a.personId !== assetPersonId) return;
-              made += a.made || 0;
-              modified += a.modified || 0;
-              delivered += a.delivered || 0;
+              if (assetPersonId && d.personId !== assetPersonId) return;
+              made += d.made || 0;
+              modified += d.modified || 0;
+              delivered += d.delivered || 0;
             }
           });
         }
@@ -10972,7 +11129,7 @@ function saveOne(taskId, personId) {
   const ds = formatDate(selectedDate);
   const card = document.querySelector(`#fillList [data-task="${taskId}"][data-person="${personId}"]`);
   if(!card) return;
-  const s = DATA.schedules.find(x=>x.date===ds && x.personId===personId && x.taskId===taskId);
+  const s = DATA.schedules.find(x=>x.date===ds && x.personId===personId && x.taskId===taskId && !x.assetType);
   if(!s) return;
   // 数字字段（made/modified/delivered/planned + 资产细分）
   card.querySelectorAll('input[data-field][type="number"]').forEach(inp=>{
@@ -11002,7 +11159,7 @@ function saveAll() {
   const list = document.getElementById('fillList');
   list.querySelectorAll('[data-task][data-person]').forEach(item=>{
     const tid = item.dataset.task, pid = item.dataset.person;
-    const s = DATA.schedules.find(x=>x.date===ds && x.personId===pid && x.taskId===tid);
+    const s = DATA.schedules.find(x=>x.date===ds && x.personId===pid && x.taskId===tid && !x.assetType);
     if(!s) return;
     item.querySelectorAll('input[data-field][type="number"]').forEach(inp=>{
       s[inp.dataset.field] = parseInt(inp.value)||0;
@@ -11229,18 +11386,21 @@ function getAllOutputMonths() {
     const d = new Date(s.date);
     months.add(`${d.getFullYear()}年${d.getMonth()+1}月`);
   });
-  // 从 assetPlan 取
+  // 从 assetPlan 取（按天流水）
   DATA.tasks.forEach(t => {
     if (!t.assetPlan) return;
     Object.values(t.assetPlan).forEach(vp => {
       if (!vp || !vp.asset) return;
       ['char', 'scene', 'sb', 'other'].forEach(type => {
         const a = vp.asset[type];
-        if (!a || !a.editDate) return;
-        const w = (a.made||0) + (a.modified||0);
-        if (w <= 0) return;
-        const d = new Date(a.editDate);
-        months.add(`${d.getFullYear()}年${d.getMonth()+1}月`);
+        if (!a || !a.daily) return;
+        Object.keys(a.daily).forEach(dk => {
+          const v = a.daily[dk] || {};
+          const w = (v.made||0) + (v.modified||0) + (v.delivered||0);
+          if (w <= 0) return;
+          const d = new Date(dk);
+          months.add(`${d.getFullYear()}年${d.getMonth()+1}月`);
+        });
       });
     });
   });
@@ -11268,17 +11428,20 @@ function calcPersonBrandWorkload(personId, monthKey) {
         if (!vp || !vp.asset) return;
         ['char', 'scene', 'sb', 'other'].forEach(type => {
           const a = vp.asset[type];
-          if (!a || !a.editDate) return;
-          // 按 personId 精确匹配
-          if (a.personId !== personId) return;
-          const d = new Date(a.editDate);
-          const mKey = `${d.getFullYear()}年${d.getMonth()+1}月`;
-          if (monthKey && monthKey !== 'all' && mKey !== monthKey) return;
-          const w = a.made || 0;
-          if (w <= 0) return;
-          workload[task.brand] = (workload[task.brand] || 0) + w;
-          total += w;
-          monthsSet.add(mKey);
+          if (!a || !a.daily) return;
+          Object.keys(a.daily).forEach(dk => {
+            const v = a.daily[dk] || {};
+            // 按 personId 精确匹配
+            if (v.personId !== personId) return;
+            const d = new Date(dk);
+            const mKey = `${d.getFullYear()}年${d.getMonth()+1}月`;
+            if (monthKey && monthKey !== 'all' && mKey !== monthKey) return;
+            const w = v.made || 0;
+            if (w <= 0) return;
+            workload[task.brand] = (workload[task.brand] || 0) + w;
+            total += w;
+            monthsSet.add(mKey);
+          });
         });
       });
     });
@@ -13025,7 +13188,7 @@ function openDetailModal(taskId, schedules) {
       }
     }
   }
-  // 实际产出：资产设计师从 assetPlan 按 editDate+personId 统计，其他角色从 schedules 统计
+  // 实际产出：资产设计师从 assetPlan 按天流水统计，其他角色从 schedules 统计
   let made = 0, modified = 0, delivered = 0;
   if (detailPlanRole === 'asset' && task.assetPlan) {
     // 员工视角：只统计这个人的产出
@@ -13034,11 +13197,12 @@ function openDetailModal(taskId, schedules) {
       if (vp && vp.asset) {
         ['char', 'scene', 'sb', 'other'].forEach(type => {
           const a = vp.asset[type];
-          if (a && a.editDate === ds) {
-            if (assetPersonId && a.personId !== assetPersonId) return;
-            made += a.made || 0;
-            modified += a.modified || 0;
-            delivered += a.delivered || 0;
+          if (a && a.daily && a.daily[ds]) {
+            const d = a.daily[ds];
+            if (assetPersonId && d.personId !== assetPersonId) return;
+            made += d.made || 0;
+            modified += d.modified || 0;
+            delivered += d.delivered || 0;
           }
         });
       }
@@ -13290,7 +13454,7 @@ function openDailyTaskDetail(taskId) {
   if (highlightRole === 'asset') {
     // 资产设计师：从 assetPlan 统计
     // 计划：按排产日期统计当日
-    // 制作/交付/修改：按编辑日期（editDate）+ personId 统计当日
+    // 制作/交付/修改：按天流水 + personId 统计当日
     statUnit = '张';
     const assetPersonId = currentUser && currentUser.id && !isAdmin ? currentUser.id : null;
     if (task.assetPlan) {
@@ -13303,13 +13467,14 @@ function openDailyTaskDetail(taskId) {
             if (a.date === ds) {
               planned += a.plan !== undefined ? a.plan : (a.qty || 0);
             }
-            // 制作/交付/修改：按编辑日期+personId统计当日
-            if (a.editDate === ds) {
+            // 制作/交付/修改：按天流水+personId统计当日
+            if (a.daily && a.daily[ds]) {
+              const d = a.daily[ds];
               // 员工视角：只统计自己的产出
-              if (assetPersonId && a.personId !== assetPersonId) return;
-              made += a.made || 0;
-              modified += a.modified || 0;
-              delivered += a.delivered || 0;
+              if (assetPersonId && d.personId !== assetPersonId) return;
+              made += d.made || 0;
+              modified += d.modified || 0;
+              delivered += d.delivered || 0;
             }
           });
         }
@@ -13421,8 +13586,8 @@ function openDailyTaskDetail(taskId) {
     const dirLast = getVideoLastDates(task.id, i, 'director');
     const aiLast = getVideoLastDates(task.id, i, 'ai');
 
-    // 资产数据（从assetPlan取每种资产类型，按当日+personId筛选）
-    // 计划按排产日期date，产出按编辑日期editDate
+    // 资产数据（从assetPlan取每种资产类型，按当日流水+personId筛选）
+    // 计划按排产日期date，产出按天流水
     const assetRawData = task.assetPlan && task.assetPlan[i] && task.assetPlan[i].asset
       ? task.assetPlan[i].asset
       : {};
@@ -13439,22 +13604,30 @@ function openDailyTaskDetail(taskId) {
           plan = a.plan !== undefined ? a.plan : (a.qty || 0);
           date = a.date;
         }
-        // 产出：编辑日期是当天 + 是自己编辑的才算
-        if (a.editDate === ds) {
-          if (!assetPersonId || a.personId === assetPersonId) {
-            made = a.made || 0;
-            modified = a.modified || 0;
-            delivered = a.delivered || 0;
-            editDate = a.editDate;
+        const daily = a.daily || {};
+        // 产出：当天有流水 + 是自己编辑的才算
+        const todayRec = daily[ds];
+        if (todayRec && ((todayRec.made || 0) > 0 || (todayRec.modified || 0) > 0 || (todayRec.delivered || 0) > 0)) {
+          if (!assetPersonId || todayRec.personId === assetPersonId) {
+            made = todayRec.made || 0;
+            modified = todayRec.modified || 0;
+            delivered = todayRec.delivered || 0;
+            editDate = ds;
           }
-        } else if (a.editDate && (a.made > 0 || a.modified > 0 || a.delivered > 0)) {
-          // 历史：编辑日期不是当天但有产出，灰色展示（不计入当天统计）
-          if (!assetPersonId || a.personId === assetPersonId) {
-            made = a.made || 0;
-            modified = a.modified || 0;
-            delivered = a.delivered || 0;
-            editDate = a.editDate;
-            isHist = true;
+        }
+        if (!editDate) {
+          // 历史：最近一次有产出的日期，灰色展示（不计入当天统计）
+          const last = getAssetLastDates(task.id, i, type);
+          const histDate = last.deliverDate || last.madeDate || last.modifiedDate;
+          if (histDate) {
+            const hv = daily[histDate] || {};
+            if (!assetPersonId || hv.personId === assetPersonId) {
+              made = hv.made || 0;
+              modified = hv.modified || 0;
+              delivered = hv.delivered || 0;
+              editDate = histDate;
+              isHist = true;
+            }
           }
         }
       }
@@ -13660,29 +13833,29 @@ function openDailyTaskDetail(taskId) {
     });
   });
 
-  // 绑定资产列的"清除"按钮点击（整组清除所有资产数据，保留计划数）
+  // 绑定资产列的"清除"按钮点击（整组清除所有资产当日流水，保留计划数）
   document.querySelectorAll('#dailyTaskDetailTable [data-action="asset-clear"]').forEach(btn => {
     if (!canEditRole('asset')) return;
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const cellEl = btn.closest('.asset-cell-content');
       const videoIndex = parseInt(cellEl.dataset.video);
-      if (task.assetPlan && task.assetPlan[videoIndex] && task.assetPlan[videoIndex].asset) {
-        ['char', 'scene', 'sb', 'other'].forEach(type => {
-          const a = task.assetPlan[videoIndex].asset[type];
-          if (a) {
-            a.made = 0;
-            a.modified = 0;
-            a.delivered = 0;
-            a.editDate = '';
-            a.note = '';
-            // plan 和 date（排产日期）保留，不清除
+      const dsToday = formatDate(selectedDate);
+      ['char', 'scene', 'sb', 'other'].forEach(type => {
+        // 已交付锁定的资产不动；plan 和 date（排产日期）保留
+        if (isAssetLocked(task.id, videoIndex, type, dsToday)) return;
+        if (currentUser && currentUser.id && !isAdmin) {
+          // 员工：只清自己当天的流水
+          clearAssetOutput(task.id, videoIndex, type, dsToday, currentUser.id);
+        } else {
+          // 管理员：清掉当天流水里出现的归属人
+          const slot = task.assetPlan && task.assetPlan[videoIndex] && task.assetPlan[videoIndex].asset[type];
+          const rec = slot && slot.daily && slot.daily[dsToday];
+          if (rec && rec.personId) {
+            clearAssetOutput(task.id, videoIndex, type, dsToday, rec.personId);
           }
-        });
-        // 同步飞书资产计划表（整组清零后回写）
-        saveToFeishu('asset-plan-sync', { taskId: task.id, records: buildAssetPlanRecords(task) })
-          .catch(err => showToast('同步飞书失败：' + err.message));
-      }
+        }
+      });
       openDailyTaskDetail(task.id);
       renderDaily();
       showToast(`${icon('check', 16)} 已清除`);
@@ -13805,22 +13978,27 @@ function openDailyCellEditor(taskId, videoIndex, role, field, assetType) {
     if (!task.assetPlan) task.assetPlan = {};
     if (!task.assetPlan[videoIndex]) task.assetPlan[videoIndex] = { asset: {} };
     if (!task.assetPlan[videoIndex].asset[assetType]) {
-      task.assetPlan[videoIndex].asset[assetType] = { plan: 0, made: 0, modified: 0, delivered: 0, date: '', note: '' };
+      task.assetPlan[videoIndex].asset[assetType] = { plan: 0, qty: 0, date: '', note: '', personId: '', daily: {} };
     }
-    rec = task.assetPlan[videoIndex].asset[assetType];
+    const slot = task.assetPlan[videoIndex].asset[assetType];
+    if (!slot.daily) slot.daily = {};
+    // 旧数据兼容：qty 字段迁移到 plan
+    if (slot.qty !== undefined && slot.plan === undefined) {
+      slot.plan = slot.qty;
+    }
+    if (slot.plan === undefined) slot.plan = 0;
+    // 交付锁定：该资产已交付且交付日不是当天，只能回到当日修改
+    if (isAssetLocked(taskId, videoIndex, assetType, ds)) {
+      const last = getAssetLastDates(taskId, videoIndex, assetType);
+      showToast(`该资产已于 ${formatShortDate(last.deliverDate)} 交付，如需修改请回到当日编辑`);
+      return;
+    }
+    // 表单值：计划取 slot，产出取当天流水
+    const d0 = slot.daily[ds] || { made: 0, modified: 0, delivered: 0, personId: '' };
+    rec = { plan: slot.plan || 0, made: d0.made || 0, modified: d0.modified || 0, delivered: d0.delivered || 0, personId: d0.personId || slot.personId || '' };
     // 归属人：管理员代填时可选择该资产的负责人
     ownerIds = getRoleAssignees(task, 'asset').filter(id => getPerson(id));
     currentEditingPersonId = getDefaultOwner(task, 'asset', '资产设计师', videoIndex, ds, rec.personId);
-    // 旧数据兼容：qty 字段迁移到 plan
-    if (rec.qty !== undefined && rec.plan === undefined) {
-      rec.plan = rec.qty;
-      delete rec.qty;
-    }
-    // 确保新字段都有默认值
-    if (rec.plan === undefined) rec.plan = 0;
-    if (rec.made === undefined) rec.made = 0;
-    if (rec.modified === undefined) rec.modified = 0;
-    if (rec.delivered === undefined) rec.delivered = 0;
   } else {
     // 非资产：从 videoOutput 读取，保存时用 saveVideoOutput 同步写 output 和 schedules
     document.getElementById('dailyCellTitle').textContent = `编辑${roleName}数据`;
@@ -13961,39 +14139,73 @@ function openAssetEditor(taskId, videoIndex) {
 
   const assetLabelMap = { char: '人物', scene: '场景', sb: '分镜', other: '其他' };
   const types = ['char', 'scene', 'sb', 'other'];
-  // 读取当前数据，确保字段完整
+  const ds = formatDate(selectedDate);
+  // 读取当前数据：计划取 slot，产出取当天流水
   const records = {};
   types.forEach(type => {
     if (!task.assetPlan[videoIndex].asset[type]) {
-      task.assetPlan[videoIndex].asset[type] = { plan: 0, made: 0, modified: 0, delivered: 0, date: '', editDate: '', note: '' };
+      task.assetPlan[videoIndex].asset[type] = { plan: 0, qty: 0, date: '', note: '', personId: '', daily: {} };
     }
-    const r = task.assetPlan[videoIndex].asset[type];
+    const slot = task.assetPlan[videoIndex].asset[type];
+    if (!slot.daily) slot.daily = {};
     // 旧数据兼容
-    if (r.qty !== undefined && r.plan === undefined) {
-      r.plan = r.qty;
-      delete r.qty;
+    if (slot.qty !== undefined && slot.plan === undefined) {
+      slot.plan = slot.qty;
     }
-    if (r.plan === undefined) r.plan = 0;
-    if (r.made === undefined) r.made = 0;
-    if (r.modified === undefined) r.modified = 0;
-    if (r.delivered === undefined) r.delivered = 0;
-    if (r.editDate === undefined) r.editDate = '';
-    records[type] = r;
+    if (slot.plan === undefined) slot.plan = 0;
+    const d0 = slot.daily[ds] || { made: 0, modified: 0, delivered: 0, personId: '' };
+    records[type] = { made: d0.made || 0, modified: d0.modified || 0, delivered: d0.delivered || 0, personId: d0.personId || slot.personId || '' };
   });
 
   const existingOwner = Object.values(records).map(r => r.personId).find(id => id && getPerson(id));
   const ownerIds = getRoleAssignees(task, 'asset').filter(id => getPerson(id));
-  const defaultOwner = getDefaultOwner(task, 'asset', '资产设计师', videoIndex, formatDate(selectedDate), existingOwner);
-  currentAssetEditor = { taskId, videoIndex, records, ownerIds, personId: defaultOwner };
+  const defaultOwner = getDefaultOwner(task, 'asset', '资产设计师', videoIndex, ds, existingOwner);
+  // 交付锁定：已交付且交付日不是当天的资产类型，整段只读
+  const lockedTypes = {};
+  const lockedDates = {};
+  const lockedVals = {};
+  types.forEach(type => {
+    if (isAssetLocked(taskId, videoIndex, type, ds)) {
+      lockedTypes[type] = true;
+      const last = getAssetLastDates(taskId, videoIndex, type);
+      lockedDates[type] = last.deliverDate;
+      lockedVals[type] = getAssetDaily(taskId, videoIndex, type, last.deliverDate);
+    }
+  });
+  currentAssetEditor = { taskId, videoIndex, records, ownerIds, personId: defaultOwner, lockedTypes };
 
   document.getElementById('dailyCellTitle').textContent = `编辑资产 · ${task.name}-${videoIndex}`;
-  document.getElementById('dailyCellSub').textContent = `${task.name}-${videoIndex} · 资产设计师 · ${formatDisplay(formatDate(selectedDate))}`;
+  document.getElementById('dailyCellSub').textContent = `${task.name}-${videoIndex} · 资产设计师 · ${formatDisplay(ds)}`;
 
   // 渲染四类资产的编辑表单
   let sectionsHtml = '';
   types.forEach(type => {
     const r = records[type];
     const label = assetLabelMap[type];
+    if (lockedTypes[type]) {
+      // 已交付锁定：只读展示交付当天的值
+      const lv = lockedVals[type] || { made: 0, modified: 0, delivered: 0 };
+      sectionsHtml += `
+        <div class="asset-edit-section asset-edit-locked">
+          <div class="asset-edit-section-title">${label}资产<span class="deliver-lock-hint" style="margin-left:6px">已于 ${formatShortDate(lockedDates[type])} 交付，回到当日可修改</span></div>
+          <div class="asset-edit-row">
+            <div class="form-field">
+              <label>交付(张)</label>
+              <input type="number" class="form-input" id="asset_${type}_delivered" min="0" value="${lv.delivered || 0}" disabled>
+            </div>
+            <div class="form-field">
+              <label>制作(张)</label>
+              <input type="number" class="form-input" id="asset_${type}_made" min="0" value="${lv.made || 0}" disabled>
+            </div>
+            <div class="form-field">
+              <label>修改(张)</label>
+              <input type="number" class="form-input" id="asset_${type}_modified" min="0" value="${lv.modified || 0}" disabled>
+            </div>
+          </div>
+        </div>
+      `;
+      return;
+    }
     sectionsHtml += `
       <div class="asset-edit-section">
         <div class="asset-edit-section-title">${label}资产</div>
@@ -14048,34 +14260,19 @@ async function saveDailyCell() {
   const taskId = currentDailyCell.taskId;
 
   if (currentDailyCell.isAssetBatchEdit) {
-    // 批量资产编辑：保存四类资产
-    const task = DATA.tasks.find(t => t.id === taskId);
-    if (task && currentAssetEditor) {
+    // 批量资产编辑：四类资产按天流水保存
+    if (currentAssetEditor) {
       const types = ['char', 'scene', 'sb', 'other'];
       const editorId = getPickedOwner(currentAssetEditor.personId || currentUser?.id);
+      const locked = currentAssetEditor.lockedTypes || {};
+      const ds = formatDate(selectedDate);
       types.forEach(type => {
+        if (locked[type]) return; // 已交付锁定：不动它的记录
         const deliveredVal = parseInt(document.getElementById(`asset_${type}_delivered`).value) || 0;
         const madeVal = parseInt(document.getElementById(`asset_${type}_made`).value) || 0;
         const modifiedVal = parseInt(document.getElementById(`asset_${type}_modified`).value) || 0;
-        if (!task.assetPlan[currentDailyCell.videoIndex]) task.assetPlan[currentDailyCell.videoIndex] = { asset: {} };
-        if (!task.assetPlan[currentDailyCell.videoIndex].asset[type]) {
-          task.assetPlan[currentDailyCell.videoIndex].asset[type] = { plan: 0, made: 0, modified: 0, delivered: 0, date: '', editDate: '', note: '', personId: '' };
-        }
-        const rec = task.assetPlan[currentDailyCell.videoIndex].asset[type];
-        rec.made = madeVal;
-        rec.modified = modifiedVal;
-        rec.delivered = deliveredVal;
-        // 记录编辑人
-        if (madeVal > 0 || modifiedVal > 0 || deliveredVal > 0) {
-          rec.personId = editorId;
-        }
-        // editDate：编辑日期（制作/交付/修改按这个日期统计）
-        // date：排产日期（计划按这个日期统计，保持不动）
-        if (madeVal > 0 || modifiedVal > 0 || deliveredVal > 0) {
-          rec.editDate = formatDate(selectedDate);
-        } else {
-          rec.editDate = '';
-        }
+        saveAssetOutput(taskId, currentDailyCell.videoIndex, type, ds, editorId,
+          { made: madeVal, modified: modifiedVal, delivered: deliveredVal });
       });
       currentAssetEditor = null;
     }
@@ -14084,16 +14281,22 @@ async function saveDailyCell() {
     const madeVal = parseInt(document.getElementById('assetMadeInput').value) || 0;
     const modifiedVal = parseInt(document.getElementById('assetModifiedInput').value) || 0;
     const deliveredVal = currentDailyCell.delivered ? 1 : 0;
-    currentDailyCell.record.plan = planVal;
-    currentDailyCell.record.qty = planVal;
-    currentDailyCell.record.made = madeVal;
-    currentDailyCell.record.modified = modifiedVal;
-    currentDailyCell.record.delivered = deliveredVal;
-    // 归属人：有产出时记到选择的负责人，没产出则清空（避免计划数据被算成工作量）
-    if (madeVal > 0 || modifiedVal > 0 || deliveredVal > 0) {
-      currentDailyCell.record.personId = getPickedOwner(currentDailyCell.personId);
-    } else {
-      currentDailyCell.record.personId = '';
+    const task = getTask(taskId);
+    const slot = task && task.assetPlan && task.assetPlan[currentDailyCell.videoIndex]
+      ? task.assetPlan[currentDailyCell.videoIndex].asset[currentDailyCell.assetType] : null;
+    const oldPlan = slot ? (slot.plan !== undefined ? slot.plan : (slot.qty || 0)) : 0;
+    if (slot) { slot.plan = planVal; slot.qty = planVal; }
+    const owner = getPickedOwner(currentDailyCell.personId);
+    saveAssetOutput(taskId, currentDailyCell.videoIndex, currentDailyCell.assetType, currentDailyCell.date, owner,
+      { made: madeVal, modified: modifiedVal, delivered: deliveredVal });
+    // 计划数变更时同步飞书资产计划表
+    if (slot && planVal !== oldPlan && feishuDataLoaded) {
+      try {
+        await saveToFeishu('asset-plan-sync', { taskId: task.id, records: buildAssetPlanRecords(task) });
+      } catch (err) {
+        showToast('资产同步飞书失败：' + err.message);
+        return;
+      }
     }
   } else {
     // 编导/AI制作师：用 saveVideoOutput 保存（同步写 output 和 schedules）
@@ -14109,19 +14312,6 @@ async function saveDailyCell() {
       getPickedOwner(currentDailyCell.personId),
       { made: madeVal, modified: modifiedVal, delivered: deliveredVal }
     );
-  }
-
-  // 资产类改动同步到飞书资产计划表
-  if ((currentDailyCell.isAssetBatchEdit || currentDailyCell.isAssetEdit) && feishuDataLoaded) {
-    const task = getTask(taskId);
-    if (task) {
-      try {
-        await saveToFeishu('asset-plan-sync', { taskId: task.id, records: buildAssetPlanRecords(task) });
-      } catch (err) {
-        showToast('资产同步飞书失败：' + err.message);
-        return;
-      }
-    }
   }
 
   closeDailyCellModal();
