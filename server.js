@@ -439,9 +439,9 @@ app.get('/api/data/all', authMiddleware, async (req, res) => {
         assetType: extractSelect(f.asset_type),
         planQty: Number(f.plan_qty) || 0,
         planDate: extractDate(f.plan_date),
-        made: f.made || 0,
-        modified: f.modified || 0,
-        delivered: f.delivered || 0,
+        made: Number(f.made) || 0,
+        modified: Number(f.modified) || 0,
+        delivered: Number(f.delivered) || 0,
         editDate: extractDate(f.edit_date),
         personRecordId: personTrId || '',
         personId: '', // 后面映射

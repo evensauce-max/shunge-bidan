@@ -10084,7 +10084,7 @@ function renderDaily() {
   const person = viewPersonId ? getPerson(viewPersonId) : null;
   document.getElementById('dailyDesc').textContent = person
     ? `${person.name} 的每日产出${getRoleUnitDesc(person.role)}`
-    : '全员每日产出总览（全部角色合计）';
+    : '全员每日产出总览（以视频成片为统计口径）';
 
   // 全部保存按钮已隐藏
   document.getElementById('saveAllBtn').style.display = 'none';
@@ -10092,8 +10092,14 @@ function renderDaily() {
   let sch = DATA.schedules.filter(s=>s.date===ds);
   if(person) sch = sch.filter(s=>s.personId===person.id);
 
-  // 管理员视角：统计所有角色（编导+AI制作师+资产设计师）
+  // 管理员视角下，顶部统计以AI制作师口径为准（反映当日实际视频产出）
   let statSch = sch;
+  if (isAdmin && !person) {
+    statSch = sch.filter(s => {
+      const p = getPerson(s.personId);
+      return p && hasRole(p.id, 'AI制作师');
+    });
+  }
   // 顶部统计数字的单位：员工视角用对应角色单位，管理员视角用"条"
   const unit = person ? getRoleUnit(getPrimaryRole(person)) : '条';
   // 顶部统计：任务数用"个"，其他用角色对应的单位
@@ -10103,23 +10109,20 @@ function renderDaily() {
   const planRole = isAdmin && !person ? 'ai' : (person ? (getPrimaryRole(person) === '编导' ? 'director' : getPrimaryRole(person) === 'AI制作师' ? 'ai' : 'asset') : 'ai');
   // 任务ID列表：资产设计师视角额外从 assetPlan 收集（因为资产产出不在 schedules 里）
   let taskIds = [...new Set(sch.map(s => s.taskId))];
-  const includeAssetTasks = (isAdmin && !person) || (planRole === 'asset' && person);
-  if (includeAssetTasks) {
+  if (planRole === 'asset' && person) {
     DATA.tasks.forEach(t => {
       if (!t.assetPlan) return;
-      if (planRole === 'asset' && person) {
-        // 员工视角：必须是这个资产设计师负责的任务
-        const assetIds = getTaskPersonIds(t.assetDesigner);
-        if (!assetIds.includes(person.id)) return;
-      }
+      // 必须是这个资产设计师负责的任务
+      const assetIds = getTaskPersonIds(t.assetDesigner);
+      if (!assetIds.includes(person.id)) return;
       let hasToday = false;
       Object.values(t.assetPlan).forEach(vp => {
         if (!vp || !vp.asset) return;
         ['char', 'scene', 'sb', 'other'].forEach(type => {
           const a = vp.asset[type];
           if (!a) return;
-          // 当天有排产或有产出就算（员工视角只看自己的产出）
-          if (a.date === ds || (a.editDate === ds && (!person || a.personId === person.id))) {
+          // 当天有排产或有产出就算
+          if (a.date === ds || (a.editDate === ds && a.personId === person.id)) {
             hasToday = true;
           }
         });
@@ -10127,23 +10130,11 @@ function renderDaily() {
       if (hasToday && !taskIds.includes(t.id)) taskIds.push(t.id);
     });
   }
-  // 任务数：管理员/资产视角用任务去重数，其他用 schedules 记录数
-  document.getElementById('dsTasks').textContent = ((isAdmin && !person) || planRole === 'asset') ? taskIds.length : statSch.length;
+  // 任务数：资产设计师用 taskIds 数量，其他用 schedules 记录数
+  document.getElementById('dsTasks').textContent = planRole === 'asset' ? taskIds.length : statSch.length;
   taskIds.forEach(tid => {
     const t = getTask(tid);
     if (!t) return;
-    if (isAdmin && !person) {
-      // 管理员：编导计划 + AI计划 + 资产计划全口径
-      if (t.directorPlan) for (let vi = 1; vi <= t.totalVideos; vi++) { if (t.directorPlan[vi] === ds) totalPlan++; }
-      if (t.aiPlan) for (let vi = 1; vi <= t.totalVideos; vi++) { if (t.aiPlan[vi] === ds) totalPlan++; }
-      if (t.assetPlan) {
-        for (let vi = 1; vi <= t.totalVideos; vi++) {
-          const a = t.assetPlan[vi] && t.assetPlan[vi].asset;
-          if (a) Object.values(a).forEach(v => { if (v && v.date === ds) totalPlan += v.plan !== undefined ? v.plan : (v.qty || 0); });
-        }
-      }
-      return;
-    }
     if (planRole === 'director' && t.directorPlan) {
       for (let vi = 1; vi <= t.totalVideos; vi++) {
         if (t.directorPlan[vi] === ds) totalPlan++;
@@ -10168,27 +10159,7 @@ function renderDaily() {
   document.getElementById('dsPlan').textContent = totalPlan;
   // 制作/交付/修改：资产设计师从 assetPlan 按 editDate+personId 统计，其他从 schedules 统计
   let realMade = 0, realModified = 0, realDelivered = 0;
-  if (isAdmin && !person) {
-    // 管理员：schedules 全角色产出 + 资产产出（按 editDate）
-    realMade = statSch.filter(s=>!s.isPlanRecord).reduce((a,s)=>a+(s.made||0),0);
-    realModified = statSch.filter(s=>!s.isPlanRecord).reduce((a,s)=>a+(s.modified||0),0);
-    realDelivered = statSch.filter(s=>!s.isPlanRecord).reduce((a,s)=>a+(s.delivered||0),0);
-    taskIds.forEach(tid => {
-      const t = getTask(tid);
-      if (!t || !t.assetPlan) return;
-      Object.values(t.assetPlan).forEach(vp => {
-        if (vp && vp.asset) {
-          Object.values(vp.asset).forEach(a => {
-            if (a && a.editDate === ds) {
-              realMade += a.made || 0;
-              realModified += a.modified || 0;
-              realDelivered += a.delivered || 0;
-            }
-          });
-        }
-      });
-    });
-  } else if (planRole === 'asset') {
+  if (planRole === 'asset') {
     const assetPersonId = person ? person.id : null;
     taskIds.forEach(tid => {
       const t = getTask(tid);
@@ -10310,15 +10281,7 @@ function renderDaily() {
           unit = '条';
         }
         // 计划数直接从task的排产计划数据里数当天的，跟高亮用的数据源一致
-        if (isAdmin && !person) {
-          // 管理员：编导+AI+资产全口径
-          if (task.directorPlan) for (let vi = 1; vi <= task.totalVideos; vi++) { if (task.directorPlan[vi] === ds) planned++; }
-          if (task.aiPlan) for (let vi = 1; vi <= task.totalVideos; vi++) { if (task.aiPlan[vi] === ds) planned++; }
-          if (task.assetPlan) for (let vi = 1; vi <= task.totalVideos; vi++) {
-            const a = task.assetPlan[vi] && task.assetPlan[vi].asset;
-            if (a) Object.values(a).forEach(v => { if (v && v.date === ds) planned += v.plan !== undefined ? v.plan : (v.qty || 0); });
-          }
-        } else if (roleForPlan === 'director' && task.directorPlan) {
+        if (roleForPlan === 'director' && task.directorPlan) {
           for (let vi = 1; vi <= task.totalVideos; vi++) {
             if (task.directorPlan[vi] === ds) planned++;
           }
@@ -10341,23 +10304,7 @@ function renderDaily() {
         }
         // 实际产出：资产设计师从 assetPlan 按 editDate+personId 统计，其他角色从 schedules 统计
         let made = 0, modified = 0, delivered = 0;
-        if (isAdmin && !person) {
-          // 管理员：所有角色 schedules 产出 + 资产产出（按 editDate）
-          const realScs = scs.filter(s => !s.isPlanRecord);
-          made = realScs.reduce((a,s)=>a+(s.made||0),0);
-          modified = realScs.reduce((a,s)=>a+(s.modified||0),0);
-          delivered = realScs.reduce((a,s)=>a+(s.delivered||0),0);
-          if (task.assetPlan) for (let vi = 1; vi <= task.totalVideos; vi++) {
-            const a = task.assetPlan[vi] && task.assetPlan[vi].asset;
-            if (a) Object.values(a).forEach(v => {
-              if (v && v.editDate === ds) {
-                made += v.made || 0;
-                modified += v.modified || 0;
-                delivered += v.delivered || 0;
-              }
-            });
-          }
-        } else if (roleForPlan === 'asset' && task.assetPlan) {
+        if (roleForPlan === 'asset' && task.assetPlan) {
           const assetPersonId = person ? person.id : null;
           for (let vi = 1; vi <= task.totalVideos; vi++) {
             const a = task.assetPlan[vi] && task.assetPlan[vi].asset;
@@ -13658,6 +13605,49 @@ function getVideoDayOutput(taskId, videoIndex, role, date, field) {
   return recs.reduce((a, s) => a + (s[field] || 0), 0);
 }
 
+// 该商单某角色实际分配的人员列表
+function getRoleAssignees(task, role) {
+  if (!task) return [];
+  if (role === 'director') return getTaskPersonIds(task.director);
+  if (role === 'ai') return getTaskPersonIds(task.aiMaker);
+  return getTaskPersonIds(task.assetDesigner);
+}
+
+// 默认归属人：优先沿用当天已有记录的归属人，其次按视频轮询分配给该角色的人员
+function getDefaultOwner(task, role, roleName, videoIndex, date, fallbackId) {
+  // 员工只能记在自己头上
+  if (!isAdmin && currentUser && currentUser.id) return currentUser.id;
+  const ids = getRoleAssignees(task, role).filter(id => getPerson(id));
+  if (!ids.length) return fallbackId || null;
+  if (fallbackId && ids.includes(fallbackId)) return fallbackId;
+  const existing = (DATA.schedules || []).find(s =>
+    s.taskId === task.id && s.date === date && s.role === roleName && !s.isPlanRecord && ids.includes(s.personId)
+  );
+  if (existing) return existing.personId;
+  return ids[(videoIndex - 1) % ids.length];
+}
+
+// 管理员代填时的「归属人」选择器（角色只有一人或非管理员时不显示）
+function buildOwnerPicker(personIds, selectedId) {
+  if (!isAdmin || !personIds || personIds.length <= 1) return '';
+  return `
+      <div class="form-field">
+        <label>归属人<span class="form-hint">这批数据计入所选人员的工作量</span></label>
+        <select class="form-select" id="dailyCellOwner" style="width:100%">
+          ${personIds.map(pid => {
+            const p = getPerson(pid);
+            return `<option value="${pid}"${pid === selectedId ? ' selected' : ''}>${escapeHtml(p ? p.name : pid)}</option>`;
+          }).join('')}
+        </select>
+      </div>`;
+}
+
+// 读取弹窗中选择的归属人
+function getPickedOwner(fallbackId) {
+  const el = document.getElementById('dailyCellOwner');
+  return (el && el.value) ? el.value : (fallbackId || '');
+}
+
 // 打开单元格编辑弹窗
 let currentDailyCell = null; // { taskId, videoIndex, role, field }
 
@@ -13677,6 +13667,7 @@ function openDailyCellEditor(taskId, videoIndex, role, field, assetType) {
   let rec;
   let isAssetEdit = false;
   let currentEditingPersonId = null;
+  let ownerIds = [];
 
   // 资产类型：从task.assetPlan读写
   if (role === 'asset' && assetType) {
@@ -13688,6 +13679,9 @@ function openDailyCellEditor(taskId, videoIndex, role, field, assetType) {
       task.assetPlan[videoIndex].asset[assetType] = { plan: 0, made: 0, modified: 0, delivered: 0, date: '', note: '' };
     }
     rec = task.assetPlan[videoIndex].asset[assetType];
+    // 归属人：管理员代填时可选择该资产的负责人
+    ownerIds = getRoleAssignees(task, 'asset').filter(id => getPerson(id));
+    currentEditingPersonId = getDefaultOwner(task, 'asset', '资产设计师', videoIndex, ds, rec.personId);
     // 旧数据兼容：qty 字段迁移到 plan
     if (rec.qty !== undefined && rec.plan === undefined) {
       rec.plan = rec.qty;
@@ -13701,15 +13695,14 @@ function openDailyCellEditor(taskId, videoIndex, role, field, assetType) {
   } else {
     // 非资产：从 videoOutput 读取，保存时用 saveVideoOutput 同步写 output 和 schedules
     document.getElementById('dailyCellTitle').textContent = `编辑${roleName}数据`;
-    // 确定保存到谁头上：员工视角用自己，管理员用该角色第一个人
+    // 确定保存到谁头上：员工视角用自己，管理员默认按该视频负责人，可手动切换
     let targetPersonId = null;
     if (currentUser && currentUser.id && !isAdmin) {
       targetPersonId = currentUser.id;
+      ownerIds = [];
     } else {
-      const personIds = role === 'director' ? getTaskPersonIds(task.director)
-        : role === 'ai' ? getTaskPersonIds(task.aiMaker)
-        : getTaskPersonIds(task.assetDesigner);
-      targetPersonId = personIds[0] || null;
+      ownerIds = getRoleAssignees(task, role).filter(id => getPerson(id));
+      targetPersonId = getDefaultOwner(task, role, roleName, videoIndex, ds);
     }
     // 从 videoOutput 读当前值
     const output = getVideoOutput(taskId, videoIndex, role, ds);
@@ -13723,11 +13716,12 @@ function openDailyCellEditor(taskId, videoIndex, role, field, assetType) {
   }
   document.getElementById('dailyCellSub').textContent = subText;
 
-  currentDailyCell = { taskId, videoIndex, role, field, assetType, record: rec, isAssetEdit, personId: currentEditingPersonId, date: ds };
+  currentDailyCell = { taskId, videoIndex, role, field, assetType, record: rec, isAssetEdit, personId: currentEditingPersonId, ownerIds, date: ds };
 
   // 渲染编辑表单
   if (isAssetEdit) {
     document.getElementById('dailyCellBody').innerHTML = `
+      ${buildOwnerPicker(ownerIds, currentEditingPersonId)}
       <div class="form-field">
         <label>计划数量(张)</label>
         <input type="number" class="form-input" id="assetPlanInput" min="0" value="${rec.plan || 0}">
@@ -13754,6 +13748,7 @@ function openDailyCellEditor(taskId, videoIndex, role, field, assetType) {
     // 编导/AI制作师：综合编辑表单
     const unitLabel = role === 'director' ? '脚本' : '视频';
     document.getElementById('dailyCellBody').innerHTML = `
+      ${buildOwnerPicker(ownerIds, currentEditingPersonId)}
       <div class="daily-editor-deliver">
         <label class="daily-editor-checkbox" id="deliverCheckbox" onclick="toggleDailyDeliver()">
           <span class="checkbox-box" id="deliverCheckboxBox">
@@ -13840,7 +13835,10 @@ function openAssetEditor(taskId, videoIndex) {
     records[type] = r;
   });
 
-  currentAssetEditor = { taskId, videoIndex, records };
+  const existingOwner = Object.values(records).map(r => r.personId).find(id => id && getPerson(id));
+  const ownerIds = getRoleAssignees(task, 'asset').filter(id => getPerson(id));
+  const defaultOwner = getDefaultOwner(task, 'asset', '资产设计师', videoIndex, formatDate(selectedDate), existingOwner);
+  currentAssetEditor = { taskId, videoIndex, records, ownerIds, personId: defaultOwner };
 
   document.getElementById('dailyCellTitle').textContent = `编辑资产 · ${task.name}-${videoIndex}`;
   document.getElementById('dailyCellSub').textContent = `${task.name}-${videoIndex} · 资产设计师 · ${formatDisplay(formatDate(selectedDate))}`;
@@ -13870,9 +13868,9 @@ function openAssetEditor(taskId, videoIndex) {
       </div>
     `;
   });
-  document.getElementById('dailyCellBody').innerHTML = sectionsHtml;
+  document.getElementById('dailyCellBody').innerHTML = buildOwnerPicker(ownerIds, defaultOwner) + sectionsHtml;
 
-  currentDailyCell = { isAssetBatchEdit: true, taskId, videoIndex };
+  currentDailyCell = { isAssetBatchEdit: true, taskId, videoIndex, personId: defaultOwner, ownerIds };
   // 资产编辑弹窗：宽度足够放下三个输入框，禁止横向滚动，允许纵向滚动
   const modalEl = document.querySelector('#dailyCellModal .modal');
   if (modalEl) {
@@ -13908,7 +13906,7 @@ async function saveDailyCell() {
     const task = DATA.tasks.find(t => t.id === taskId);
     if (task && currentAssetEditor) {
       const types = ['char', 'scene', 'sb', 'other'];
-      const editorId = currentUser ? currentUser.id : '';
+      const editorId = getPickedOwner(currentAssetEditor.personId || currentUser?.id);
       types.forEach(type => {
         const deliveredVal = parseInt(document.getElementById(`asset_${type}_delivered`).value) || 0;
         const madeVal = parseInt(document.getElementById(`asset_${type}_made`).value) || 0;
@@ -13945,6 +13943,12 @@ async function saveDailyCell() {
     currentDailyCell.record.made = madeVal;
     currentDailyCell.record.modified = modifiedVal;
     currentDailyCell.record.delivered = deliveredVal;
+    // 归属人：有产出时记到选择的负责人，没产出则清空（避免计划数据被算成工作量）
+    if (madeVal > 0 || modifiedVal > 0 || deliveredVal > 0) {
+      currentDailyCell.record.personId = getPickedOwner(currentDailyCell.personId);
+    } else {
+      currentDailyCell.record.personId = '';
+    }
   } else {
     // 编导/AI制作师：用 saveVideoOutput 保存（同步写 output 和 schedules）
     const madeVal = parseInt(document.getElementById('dailyCellMade').value) || 0;
@@ -13955,7 +13959,7 @@ async function saveDailyCell() {
       currentDailyCell.videoIndex,
       currentDailyCell.role,
       currentDailyCell.date,
-      currentDailyCell.personId,
+      getPickedOwner(currentDailyCell.personId),
       { made: madeVal, modified: modifiedVal, delivered: deliveredVal }
     );
   }
