@@ -11431,62 +11431,29 @@ function getAllOutputMonths() {
 }
 
 // 计算某人某月（或全部月份）在各品牌上的工作量（制作数，来自每日汇总）
+// 统一口径：schedules 全量扫描（视频+资产流水都落在这张表），排除计划行，不按角色分路径，
+// 避免跨角色产出漏统（如资产设计师的编导产出、编导的资产产出）
 function calcPersonBrandWorkload(personId, monthKey) {
   const workload = {}; // { brand: count }
   let total = 0;
-  let monthCount = 0;
   const monthsSet = new Set();
-  const person = getPerson(personId);
-  const isAsset = person && getPrimaryRole(person) === '资产设计师';
 
-  // 资产设计师：只从 assetPlan 统计（和每日汇总口径一致），不从 schedules 统计
-  // 其他角色：从 schedules 统计
-  if (isAsset) {
-    DATA.tasks.forEach(task => {
-      if (!task.assetPlan) return;
-      Object.values(task.assetPlan).forEach(vp => {
-        if (!vp || !vp.asset) return;
-        ['char', 'scene', 'sb', 'other'].forEach(type => {
-          const a = vp.asset[type];
-          if (!a || !a.daily) return;
-          Object.keys(a.daily).forEach(dk => {
-            const v = a.daily[dk] || {};
-            // 按 personId 精确匹配
-            if (v.personId !== personId) return;
-            const d = new Date(dk);
-            const mKey = `${d.getFullYear()}年${d.getMonth()+1}月`;
-            if (monthKey && monthKey !== 'all' && mKey !== monthKey) return;
-            const w = v.made || 0;
-            if (w <= 0) return;
-            workload[task.brand] = (workload[task.brand] || 0) + w;
-            total += w;
-            monthsSet.add(mKey);
-          });
-        });
-      });
-    });
-  } else {
-    DATA.schedules.forEach(s => {
-      if (s.personId !== personId) return;
-      const d = new Date(s.date);
-      const mKey = `${d.getFullYear()}年${d.getMonth()+1}月`;
+  DATA.schedules.forEach(s => {
+    if (s.personId !== personId) return;
+    if (s.isPlanRecord) return; // 计划行不算产出
+    const w = s.made || 0;
+    if (w <= 0) return;
+    const d = new Date(s.date);
+    const mKey = `${d.getFullYear()}年${d.getMonth()+1}月`;
+    if (monthKey && monthKey !== 'all' && mKey !== monthKey) return;
+    const task = getTask(s.taskId);
+    if (!task) return;
+    workload[task.brand] = (workload[task.brand] || 0) + w;
+    total += w;
+    monthsSet.add(mKey);
+  });
 
-      // 月份筛选
-      if (monthKey && monthKey !== 'all' && mKey !== monthKey) return;
-
-      const task = getTask(s.taskId);
-      if (!task) return;
-      // 工作量 = 制作数
-      const w = s.made || 0;
-      if (w <= 0) return;
-      workload[task.brand] = (workload[task.brand] || 0) + w;
-      total += w;
-      monthsSet.add(mKey);
-    });
-  }
-
-  monthCount = monthsSet.size;
-  return { byBrand: workload, total, monthCount };
+  return { byBrand: workload, total, monthCount: monthsSet.size };
 }
 
 // 计算某月（或全部月份）各品牌的人力成本
