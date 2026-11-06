@@ -3791,6 +3791,16 @@
     padding-bottom: 16px;
     border-bottom: 1px solid var(--border-light);
   }
+  /* 已交付锁定的资产段：当日不可编辑，整段标灰 */
+  .asset-edit-section.asset-edit-locked {
+    background: var(--bg-muted);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    opacity: 0.55;
+  }
+  .asset-edit-section.asset-edit-locked .asset-edit-section-title {
+    color: var(--text-tertiary);
+  }
   .asset-edit-section:last-child {
     margin-bottom: 0;
     padding-bottom: 0;
