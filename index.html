@@ -3589,6 +3589,16 @@
   .role-cell-content.deliver-locked {
     opacity: 0.75;
   }
+  /* 已交付锁定的资产行：当日不可修改，标灰 */
+  .asset-row.deliver-locked {
+    opacity: 0.45;
+  }
+  .asset-row.deliver-locked .asset-col-num,
+  .asset-row.deliver-locked .asset-col-label,
+  .asset-row.deliver-locked .asset-col-date {
+    color: var(--text-tertiary);
+    font-weight: 400;
+  }
   .deliver-lock-hint {
     font-size: 10px;
     color: var(--text-tertiary);
@@ -13632,6 +13642,7 @@ function openDailyTaskDetail(taskId) {
         }
       }
       return { type, label: assetLabelMap[type], plan, made, modified, delivered, date, editDate, isHist,
+        locked: isAssetLocked(task.id, i, type, ds),
         hasData: plan > 0 || made > 0 || modified > 0 || delivered > 0 };
     });
 
@@ -13716,7 +13727,7 @@ function openDailyTaskDetail(taskId) {
       assetList.forEach(a => {
         const dateText = a.editDate ? formatShortDate(a.editDate) : '未编辑';
         rowsHtml += `
-          <div class="asset-row">
+          <div class="asset-row ${a.locked ? 'deliver-locked' : ''}">
             <span class="asset-col asset-col-label">${a.label}</span>
             <span class="asset-col asset-col-date ${a.editDate ? 'has-date' : ''}">${dateText}${a.isHist ? '（历史）' : ''}</span>
             <span class="asset-col asset-col-num">${a.plan}</span>
